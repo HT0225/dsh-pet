@@ -1189,15 +1189,26 @@ class PetSprite {
         );
         this.startThrow(px, py, vel.vx, vel.vy);
       } else {
-        // customPos 语义 = 宠物**中心**比例（position() 用 rx*W - halfW 还原左上角；
-        // startThrow 落定也按同一公式存），松手无边界夹取
-        // **夹进工作区**：用户可以拖宠物到任务栏那条边/屏幕外（宠物被遮挡/不可见），
-        // 松手后用 clampPointToRegion 把中心拉回最近的显示器工作区内，宠物永远可见。
-        const clamped = S.clampPointToRegion(AREAS, px + this.halfW, py + this.halfH);
-        this.customPos = {
-          rx: clamped.x / VIEW.w,
-          ry: clamped.y / VIEW.h,
-        };
+        // customPos 语义 = 宠物**中心**比例（position() 用 rx*W - halfW 还原左上角）。
+        // 松手夹取：按 planMove 同一边界把角色身体（HIT_BOX）夹回工作区内——
+        // sideAllow 让身体贴屏幕边缘（与漫游一致），但不允许拖到屏幕外丢失。
+        const cx = px + this.halfW;
+        const cy = py + this.halfH;
+        const side = this.sideAllow;
+        const m = 20; // 安全边距（与 moves.default.margin 一致）
+        const area = S.resolveRect(AREAS, cx, cy);
+        if (area) {
+          const minX = area.x + m + this.halfW - side;
+          const maxX = area.x + area.width - m - this.halfW + side;
+          const minY = area.y + m + this.halfH;
+          const maxY = area.y + area.height - m - this.halfH;
+          this.customPos = {
+            rx: Math.max(minX, Math.min(cx, maxX)) / VIEW.w,
+            ry: Math.max(minY, Math.min(cy, maxY)) / VIEW.h,
+          };
+        } else {
+          this.customPos = { rx: cx / VIEW.w, ry: cy / VIEW.h };
+        }
         this.position();
         // 释放后的最终窗口位置（position() 换算后），冒烟断言"释放不位移"用
         window.__dshPetDebug.lastDragRelease = { x: this.pos.x, y: this.pos.y };
