@@ -10,6 +10,8 @@ export interface MovePlan {
   startRatio: number;
   startYRatio: number;
   targetRatio: number;
+  /** 终点 Y（比例）：默认 = startYRatio（纯水平，旧行为不变）；给了 yDist 且 Y 校验通过时 ≠ startY */
+  targetYRatio: number;
   totalRatio: number;
 }
 
@@ -34,27 +36,73 @@ export const planMove = (o: {
   sideAllow?: number;
   /** 可选：显示器工作区列表（与 cx/cy 同坐标系）。给了就按并集判定落点可达性 */
   areas?: Rect[];
+  /** 可选：宠物半高（Y 方向边界判定用；提供 yDist 时必须给，否则跳过 Y 尝试） */
+  halfH?: number;
+  /** 可选：Y 方向随机偏移范围（px，给了才尝试垂直移动；Y 校验失败自动退回纯水平） */
+  yDist?: { min: number; max: number };
 }): MovePlan | null => {
   const side = o.sideAllow ?? 0;
   const distance = randomBetween(o.minDist, o.maxDist);
   const target = o.cx + o.dir * distance;
-  if (o.areas && o.areas.length > 0) {
-    // 身体左右缘各外扩 margin 后都得落在某块屏上（可以分属不同屏 = 允许骑缝行走）
-    const bodyHalf = o.halfW - side;
-    if (!rectAtPoint(o.areas, target - bodyHalf - o.margin, o.cy)) return null;
-    if (!rectAtPoint(o.areas, target + bodyHalf + o.margin, o.cy)) return null;
-  } else {
+
+  /** 目标点 (targetX, targetCy) 的身体是否可达（halfH 只在 Y 变化时用） */
+  const valid = (targetX: number, targetCy: number): boolean => {
+    const yChanged = Math.abs(targetCy - o.cy) > 0.5;
+    if (o.areas && o.areas.length > 0) {
+      // 身体左右缘各外扩 margin 后都得落在某块屏上（可以分属不同屏 = 允许骑缝行走）
+      const bodyHalf = o.halfW - side;
+      if (!rectAtPoint(o.areas, targetX - bodyHalf - o.margin, targetCy)) return false;
+      if (!rectAtPoint(o.areas, targetX + bodyHalf + o.margin, targetCy)) return false;
+      if (yChanged && o.halfH !== undefined) {
+        if (!rectAtPoint(o.areas, targetX, targetCy - o.halfH - o.margin)) return false;
+        if (!rectAtPoint(o.areas, targetX, targetCy + o.halfH + o.margin)) return false;
+      }
+      return true;
+    }
     // margin 语义 =「身体到屏幕边缘的安全距」：盒中心可到 margin + halfW - side（身体左缘 = margin）
     const leftBound = o.margin + o.halfW - side;
     const rightBound = o.W - o.margin - o.halfW + side;
-    if (target < leftBound || target > rightBound) return null;
-  }
-  return {
+    if (targetX < leftBound || targetX > rightBound) return false;
+    if (yChanged && o.halfH !== undefined) {
+      const topBound = o.margin + o.halfH;
+      const bottomBound = o.H - o.margin - o.halfH;
+      if (targetCy < topBound || targetCy > bottomBound) return false;
+    }
+    return true;
+  };
+
+  const makePlan = (targetX: number, targetCy: number): MovePlan => ({
     startRatio: o.cx / o.W,
     startYRatio: o.cy / o.H,
-    targetRatio: target / o.W,
-    totalRatio: Math.abs(target - o.cx) / o.W,
-  };
+    targetRatio: targetX / o.W,
+    targetYRatio: targetCy / o.H,
+    totalRatio: Math.abs(targetX - o.cx) / o.W,
+  });
+
+  // 尝试 Y 偏移（随机方向）：先夹到该方向的可用空间（不越界），再校验完整落点。
+  // 有效就走斜线；该方向没空间（如底部想往下）→ 退回纯水平（左右走），
+  // 与用户约定一致——「下面没有空间了，那就让他左右走」，不硬挤、不越界。
+  if (o.yDist && o.halfH !== undefined && o.yDist.max > 0) {
+    const sign: -1 | 1 = Math.random() < 0.5 ? -1 : 1;
+    const topBound = o.margin + o.halfH;
+    const bottomBound = o.H - o.margin - o.halfH;
+    // 该方向可用余量（中心能走多远才碰边）
+    const available = sign === -1 ? o.cy - topBound : bottomBound - o.cy;
+    if (available > 0) {
+      // 偏移夹进 [min(dMin,dMax), min(yDist.max, available)]——保证不越出上下界
+      const dMax = Math.min(o.yDist.max, available);
+      const dMin = Math.min(o.yDist.min, dMax);
+      const dy = randomBetween(dMin, dMax) * sign;
+      const targetCy = o.cy + dy;
+      if (Math.abs(targetCy - o.cy) > 0.5 && valid(target, targetCy)) {
+        return makePlan(target, targetCy);
+      }
+    }
+    // 这个方向没空间 / Y 校验失败 → 落到下面的纯水平（左右走）
+  }
+
+  if (!valid(target, o.cy)) return null;
+  return makePlan(target, o.cy);
 };
 
 /**

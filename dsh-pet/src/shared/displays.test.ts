@@ -351,6 +351,72 @@ describe('anchorPixel / planMove —— 角落与漫游不进空洞', () => {
   });
 });
 
+describe('planMove —— Y 方向偏移（自由散步 XY 随机走）', () => {
+  const base = {
+    cx: 960,
+    cy: 540,
+    W: 1920,
+    H: 1080,
+    dir: 1 as const,
+    minDist: 300,
+    maxDist: 300,
+    margin: 24,
+    halfW: SIZE / 2,
+    halfH: SIZE * 9 / 16 / 2,
+    sideAllow: SIDE_ALLOW,
+  };
+
+  test('给了 yDist 且有空间 → targetYRatio ≠ startYRatio（Y 确实会动）', () => {
+    const plan = planMove({ ...base, yDist: { min: 100, max: 200 } });
+    assert.ok(plan, 'Y 偏移应可达');
+    assert.notEqual(plan!.targetYRatio, plan!.startYRatio, 'Y 应有偏移');
+    // 终点 Y 在视口内（不越界）
+    const targetY = plan!.targetYRatio * base.H;
+    assert.ok(targetY >= 0 && targetY <= base.H, `targetY=${targetY} 应在 [0,${base.H}]`);
+  });
+
+  test('不传 yDist → targetYRatio = startYRatio（纯水平，旧行为不变）', () => {
+    const plan = planMove({ ...base });
+    assert.ok(plan);
+    assert.equal(plan!.targetYRatio, plan!.startYRatio, '没给 yDist 就不该动 Y');
+  });
+
+  test('底部没空间往下 → Y 偏移失败自动退回纯水平（targetY = start，不越界）', () => {
+    // cy 靠近底部：dy 随机方向向下时会越界，planMove 应退回纯水平
+    const atBottom = { ...base, cy: 1080 - 100 }; // 距底 100px
+    // 多跑几遍，只要有一个 Y 向下的情况被夹住就行
+    let sawFallback = false;
+    for (let i = 0; i < 30; i++) {
+      const plan = planMove({ ...atBottom, yDist: { min: 200, max: 400 } });
+      assert.ok(plan, '即使 Y 失败也必须有水平计划');
+      const tY = plan!.targetYRatio * base.H;
+      assert.ok(tY <= base.H - 1, `targetY=${tY} 不该越出底部`);
+      if (Math.abs(tY - atBottom.cy) < 0.5) sawFallback = true;
+    }
+    assert.ok(sawFallback, '底部位置至少应出现一次"Y 失败→纯水平"的退回');
+  });
+
+  test('顶部没空间往上 → 同样退回纯水平', () => {
+    const atTop = { ...base, cy: 100 };
+    let sawFallback = false;
+    for (let i = 0; i < 30; i++) {
+      const plan = planMove({ ...atTop, yDist: { min: 200, max: 400 } });
+      assert.ok(plan, 'Y 失败也必须有水平计划');
+      const tY = plan!.targetYRatio * base.H;
+      assert.ok(tY >= -1, `targetY=${tY} 不该越出顶部`);
+      if (Math.abs(tY - atTop.cy) < 0.5) sawFallback = true;
+    }
+    assert.ok(sawFallback, '顶部位置至少应出现一次退回纯水平');
+  });
+
+  test('给了 yDist 但没给 halfH → 跳过 Y 尝试（安全降级，纯水平）', () => {
+    const { halfH: _omit, ...noHalfH } = base;
+    const plan = planMove({ ...noHalfH, yDist: { min: 100, max: 200 } });
+    assert.ok(plan);
+    assert.equal(plan!.targetYRatio, plan!.startYRatio, '缺 halfH 时不该动 Y');
+  });
+});
+
 describe('throwStepRegion —— confineToScreen：锁定屏后屏缝也当墙', () => {
   // 起点取「屏缘内 1px + 朝缝初速」：一步就会越界，最能看清放行 / 反弹的分叉
   const overMainEdge = { x: SPACE.bounds[0].maxX - 1, y: 300, vx: 900, vy: 0 };

@@ -323,6 +323,6 @@
   "animationWeights": {
     "idle": 10,
     "turn": 5,
-    "move": 5
+    "move": 25
   }
 }

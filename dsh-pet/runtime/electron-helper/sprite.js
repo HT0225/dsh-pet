@@ -358,8 +358,9 @@ class PetSprite {
     return { x: 0, y: 0, w: VIEW.w, h: VIEW.h };
   }
 
-  // 角落/边距 → 窗口位置；拖拽后按会话内位置（比例）还原——**松手无任何边界夹取**，
-  // 宠物停在哪就算哪（与浏览器一致：可以完全拖出工作区/屏幕；漫游仍有 planMove 边界检查兜底）
+  // 角落/边距 → 窗口位置；拖拽后按会话内位置（比例）还原。
+  // 松手时 onPointerUp 已用 clampPointToRegion 把 customPos 夹进工作区（宠物永远可见），
+  // 这里直接用 customPos 即可；漫游另有 planMove 边界检查兜底。
   position() {
     const W = VIEW.w;
     const H = VIEW.h;
@@ -624,6 +625,9 @@ class PetSprite {
       sideAllow: this.sideAllow,
       // 落点按显示器并集判定：能骑缝跨屏走，但走不进外接矩形里的空洞
       areas: AREAS,
+      // 自由散步（wander）：加 Y 随机偏移让宠物满屏走；planMove 内部校验 Y 边界，
+      // 底部没空间 → 退回纯水平（左右走），绝不越界。其它模式不传 = 纯水平（旧行为）。
+      ...(this.mode === 'wander' ? { halfH: this.halfH, yDist: { min: mp.minDist, max: mp.maxDist } } : {}),
     });
     if (!plan) return false;
     this.pendingMove = { ...plan, dir, leadSec: mp.leadSec, tailSec: mp.tailSec };
@@ -638,6 +642,9 @@ class PetSprite {
     if (!pm || this.moveRef !== null) return;
     this.pendingMove = null;
     const { startRatio, startYRatio, targetRatio, dir, totalRatio, leadSec, tailSec } = pm;
+    // targetYRatio：planMove 新增字段（纯水平计划时 = startYRatio，插值恒定 = 旧行为逐位不变）
+    const targetYRatio = pm.targetYRatio ?? startYRatio;
+    const totalYRatio = targetYRatio - startYRatio;
     const duration = Number.isFinite(el.duration) && el.duration > 0 ? el.duration : 10.09;
     const travelWindow = Math.max(0.1, duration - leadSec - tailSec);
     const token = ++this.moveToken;
@@ -647,16 +654,25 @@ class PetSprite {
       if (this.moveToken !== token) return;
       const t = el.currentTime || 0;
       let ratioX;
-      if (t <= leadSec) ratioX = startRatio;
-      else if (t >= duration - tailSec) ratioX = targetRatio;
-      else ratioX = startRatio + dir * totalRatio * ((t - leadSec) / travelWindow);
+      let ratioY;
+      if (t <= leadSec) {
+        ratioX = startRatio;
+        ratioY = startYRatio;
+      } else if (t >= duration - tailSec) {
+        ratioX = targetRatio;
+        ratioY = targetYRatio;
+      } else {
+        const p = (t - leadSec) / travelWindow;
+        ratioX = startRatio + dir * totalRatio * p;
+        ratioY = startYRatio + totalYRatio * p;
+      }
       // 移动的是窗口（宠物包围盒跟随），sprite 在本窗口内不动
-      this.sendBounds(ratioX * W - this.halfW, startYRatio * H - this.halfH);
+      this.sendBounds(ratioX * W - this.halfW, ratioY * H - this.halfH);
       if (t < duration - tailSec) {
         this.moveRef = requestAnimationFrame(step);
       } else {
         this.moveRef = null;
-        this.customPos = { rx: targetRatio, ry: startYRatio };
+        this.customPos = { rx: targetRatio, ry: targetYRatio };
       }
     };
     this.moveRef = requestAnimationFrame(step);
