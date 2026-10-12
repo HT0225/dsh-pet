@@ -1,6 +1,8 @@
 lib
 node_modules
 assets
+# 桌面壳的打包产物（Electron 运行时文件，不许被格式化改动）
+shell/dist
 runtime/electron-helper/shared-core.js
 cordis.patch.yml
 package-lock.json

@@ -25,29 +25,45 @@ const BASE_DIR = app.isPackaged ? path.dirname(process.execPath) : __dirname;
 const CONFIG_PATH = path.join(BASE_DIR, 'config.json');
 const ICON_PATH = path.join(__dirname, 'icon.png');
 
-/** 读桌宠页地址：环境变量 DSH_PET_URL 优先（临时覆盖用），其次 config.json */
-function readUrl() {
-  const fromEnv = (process.env.DSH_PET_URL || '').trim();
-  if (fromEnv) return fromEnv;
+/** 读 config.json：{ url: 桌宠页地址, interactEnabled: 互动是否开启(记住上次) } */
+function readConfig() {
   try {
     const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
-    return typeof cfg.url === 'string' ? cfg.url.trim() : '';
+    return {
+      url: typeof cfg.url === 'string' ? cfg.url.trim() : '',
+      interactEnabled: cfg.interactEnabled !== false, // 缺省 = 开（原行为）
+    };
   } catch {
-    return '';
+    return { url: '', interactEnabled: true };
   }
 }
 
-function writeUrl(url) {
-  fs.writeFileSync(CONFIG_PATH, JSON.stringify({ url }, null, 2) + '\n', 'utf8');
+function readUrl() {
+  const fromEnv = (process.env.DSH_PET_URL || '').trim();
+  if (fromEnv) return fromEnv;
+  return readConfig().url;
+}
+
+function writeConfig(patch) {
+  const next = { ...readConfig(), ...patch };
+  fs.writeFileSync(CONFIG_PATH, JSON.stringify(next, null, 2) + '\n', 'utf8');
+  return next;
 }
 
 let petWin = null;
 let tray = null;
 let petVisible = true;
+// 互动开关：false = 宠物对鼠标完全隐身（点击/右键全部穿透到下层，光标划过也不接管、不弹悬浮提示），
+// 动画与漫游照常自动播放。状态记住（config.json），托盘切换。
+let interactEnabled = readConfig().interactEnabled;
 
 /** 建全屏透明置顶主窗并加载桌宠页 */
 function createPetWindow(url) {
-  const { x, y, width, height } = screen.getPrimaryDisplay().bounds; // 只覆盖主屏（多屏第一版不做）
+  // 只铺**工作区**（workAreaBounds = 屏幕去掉任务栏的那块，多屏第一版只做主屏）。
+  // 不用完整 bounds 的原因：Windows 任务栏自身是置顶窗口，与本壳的置顶互相抢 z 序（经常是任务栏赢），
+  // 用完整屏幕矩形时底部会被任务栏压住；铺工作区后窗口与任务栏**不重叠**，遮挡从根上消失，
+  // 页面视口 = 工作区 → 宠物活动范围也自动避开任务栏（不会走到那一条底下去）。
+  const { x, y, width, height } = screen.getPrimaryDisplay().workAreaBounds;
   petWin = new BrowserWindow({
     x,
     y,
@@ -83,6 +99,8 @@ function createPetWindow(url) {
   petWin.webContents.on('did-finish-load', () => {
     petVisible = true;
     if (petWin && !petWin.isVisible()) petWin.showInactive(); // showInactive：不抢当前应用焦点
+    // 页面每次加载/刷新后推一次互动开关的当前值（页面据此决定是否响应鼠标）
+    petWin.webContents.send('pet-shell:interact-changed', interactEnabled);
     syncTray();
   });
   // 加载失败（服务器未开/断网）：退避重试 3 次，仍失败只记日志（托盘里可手动刷新）
@@ -101,16 +119,29 @@ function createPetWindow(url) {
   void petWin.loadURL(url);
 }
 
-// 页面上报：true = 光标在宠物/菜单/弹窗上 → 壳接管鼠标；false = 恢复穿透
+// 页面上报：true = 光标在宠物/菜单/弹窗上 → 壳接管鼠标；false = 恢复穿透。
+// 互动暂停（interactEnabled=false）时**忽略一切接管请求**：点击/右键永远穿透到下层。
 ipcMain.on('pet-shell:interactive', (_e, on) => {
+  if (!interactEnabled) return;
   if (petWin && !petWin.isDestroyed()) petWin.setIgnoreMouseEvents(!on, { forward: true });
 });
+
+/** 切换互动开关：关 → 立刻交还鼠标；两种状态都同步托盘菜单与页面（页面据此关 tip、永不上报接管） */
+function toggleInteract() {
+  interactEnabled = !interactEnabled;
+  writeConfig({ interactEnabled });
+  if (petWin && !petWin.isDestroyed()) {
+    if (!interactEnabled) petWin.setIgnoreMouseEvents(true, { forward: true }); // 正接管中也立即穿透
+    petWin.webContents.send('pet-shell:interact-changed', interactEnabled);
+  }
+  createTray(); // 重建菜单（勾选态/文案跟着变）
+}
 
 // 首次设置：保存桌宠页地址（可重复调用）
 ipcMain.handle('pet-shell:save-url', (_e, raw) => {
   const url = String(raw || '').trim();
   if (!/^https?:\/\//.test(url)) return { ok: false, error: '地址必须以 http(s):// 开头' };
-  writeUrl(url);
+  writeConfig({ url });
   if (!petWin || petWin.isDestroyed()) {
     createPetWindow(url);
     createTray();
@@ -151,12 +182,22 @@ function syncTray() {
   if (tray) tray.setToolTip('dsh-pet 桌宠（' + (petVisible ? '显示中' : '已隐藏') + '）');
 }
 
+/** 建托盘（幂等：只换菜单不重建对象——toggleInteract 等会反复调用） */
 function createTray() {
-  tray = new Tray(ICON_PATH); // Windows 10+ 原生支持 png 图标
+  if (!tray) {
+    tray = new Tray(ICON_PATH); // Windows 10+ 原生支持 png 图标
+    tray.on('click', toggleVisible); // 单击托盘图标 = 显示/隐藏
+  }
   tray.setToolTip('dsh-pet 桌宠');
   tray.setContextMenu(
     Menu.buildFromTemplate([
       { label: petVisible ? '隐藏宠物' : '显示宠物', click: toggleVisible },
+      {
+        label: interactEnabled ? '互动：开启（可点击宠物）' : '互动：已暂停（点击穿透给桌面）',
+        type: 'checkbox',
+        checked: interactEnabled,
+        click: toggleInteract,
+      },
       { label: '刷新页面', click: refreshPet },
       { type: 'separator' },
       { label: '打开设置页（浏览器）', click: openSettingsPage },
@@ -165,7 +206,6 @@ function createTray() {
       { label: '退出', click: () => app.quit() },
     ]),
   );
-  tray.on('click', toggleVisible); // 单击托盘图标 = 显示/隐藏
   syncTray();
 }
 

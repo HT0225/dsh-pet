@@ -11,4 +11,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('petShell', {
   setInteractive: (on) => ipcRenderer.send('pet-shell:interactive', !!on),
   saveUrl: (url) => ipcRenderer.invoke('pet-shell:save-url', url),
+  // 互动开关（托盘切换 / 每次页面加载后由主进程推一次）：false = 暂停互动，
+  // 页面据此无视鼠标（不弹提示、永不上报接管）；动画漫游不受影响
+  onInteractChange: (cb) => ipcRenderer.on('pet-shell:interact-changed', (_e, enabled) => cb(!!enabled)),
 });

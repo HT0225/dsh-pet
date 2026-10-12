@@ -67,6 +67,7 @@ class PetSprite {
     this.dragState = { active: false, dragging: false, sx: 0, sy: 0, petX: 0, petY: 0 };
     this.justDragged = false;
     this._interactive = null; // 已上报的可交互状态（setInteractive 去重用）
+    this.interactPaused = false; // 桌宠壳互动开关：true = 宠物对鼠标隐身（托盘切换，见 bind 里的订阅）
     this._inputBusy = null; // 已上报的"正在用输入"状态（syncInputBusy 去重用）
     // 拖拽抛掷物理（与浏览器 pet.ts 同构；纯计算在 shared-core S.*）：
     // 拖拽中弹簧跟随目标（包围盒左上角，工作区 px），松手按指针轨迹估速 → 抛掷（重力+边缘反弹）
@@ -173,6 +174,18 @@ class PetSprite {
     this.hit.addEventListener('pointermove', (e) => this.onPointerMove(e), { signal: ac.signal });
     this.hit.addEventListener('click', () => this.onClick(), { signal: ac.signal });
     this.hit.addEventListener('contextmenu', (e) => this.onContextMenu(e), { signal: ac.signal });
+    // 桌宠壳的互动开关（托盘「互动：暂停」）：暂停期间宠物对鼠标完全隐身 —— 不弹悬浮提示、
+    // 永不上报接管（壳侧本来也忽略接管请求，点击/右键全穿透给下层）；动画与漫游照常。
+    // 浏览器形态没有 petShell，这段不生效（行为与从前一致）。
+    if (window.petShell && typeof window.petShell.onInteractChange === 'function') {
+      window.petShell.onInteractChange((enabled) => {
+        this.interactPaused = !enabled;
+        if (this.interactPaused) {
+          this.setTip(false); // 收掉可能正显示的悬浮提示
+          this.setInteractive(false); // 立即交还鼠标（若正接管）
+        }
+      });
+    }
     window.addEventListener('pointerup', (e) => this.onPointerUp(e), { signal: ac.signal });
     window.addEventListener('pointercancel', (e) => this.onPointerUp(e), { signal: ac.signal });
     this.hit.addEventListener('lostpointercapture', (e) => this.onPointerUp(e), { signal: ac.signal });
@@ -1018,7 +1031,8 @@ class PetSprite {
   }
 
   setInteractive(flag) {
-    const next = !!flag;
+    let next = !!flag;
+    if (next && this.interactPaused) next = false; // 互动暂停：永不接管（点击/右键由壳穿透给下层）
     if (next === this._interactive) return; // 只在状态变化时发 IPC，避免逐帧刷屏
     this._interactive = next;
     window.__dshPetDebug.interactive = next;
@@ -1095,6 +1109,13 @@ class PetSprite {
     // 拖拽中窗口逐帧跟随光标、指针相对窗口坐标会有帧级抖动——强制保持可交互，绝不翻转（翻转会断拖拽）
     if (this.dragState.active) {
       this.setInteractive(true);
+      return;
+    }
+    // 互动暂停：宠物对鼠标完全隐身（不弹提示、不做命中响应）；光标位置不再驱动任何 UI。
+    // 上面的拖拽救急收尾保留（暂停瞬间若正拖着，松手仍能就地收尾）。
+    if (this.interactPaused) {
+      this.setTip(false);
+      this.setInteractive(false);
       return;
     }
     // 右键菜单/对话弹窗开启：整窗保持可交互（悬停菜单项/点输入框都不触发穿透翻转）；关闭后恢复命中区判定
