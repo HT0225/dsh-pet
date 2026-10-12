@@ -32,9 +32,10 @@ function readConfig() {
     return {
       url: typeof cfg.url === 'string' ? cfg.url.trim() : '',
       interactEnabled: cfg.interactEnabled !== false, // 缺省 = 开（原行为）
+      autoStart: cfg.autoStart === true, // 缺省 = 关
     };
   } catch {
-    return { url: '', interactEnabled: true };
+    return { url: '', interactEnabled: true, autoStart: false };
   }
 }
 
@@ -77,6 +78,7 @@ let petVisible = true;
 // 互动开关：false = 宠物对鼠标完全隐身（点击/右键全部穿透到下层，光标划过也不接管、不弹悬浮提示），
 // 动画与漫游照常自动播放。状态记住（config.json），托盘切换。
 let interactEnabled = readConfig().interactEnabled;
+let autoStart = readConfig().autoStart;
 
 /** 建全屏透明置顶主窗并加载桌宠页 */
 function createPetWindow(url) {
@@ -180,6 +182,15 @@ function toggleInteract() {
   createTray(); // 重建菜单（勾选态/文案跟着变）
 }
 
+/** 切换开机自启：写注册表 Run 键（app.setLoginItemSettings）+ 持久化到 config.json */
+function toggleAutoStart() {
+  autoStart = !autoStart;
+  writeConfig({ autoStart });
+  app.setLoginItemSettings({ openAtLogin: autoStart, path: process.execPath });
+  log('开机自启: ' + (autoStart ? '开' : '关'));
+  createTray(); // 重建菜单（勾选态跟着变）
+}
+
 // 首次设置：保存桌宠页地址（可重复调用）
 ipcMain.handle('pet-shell:save-url', (_e, raw) => {
   const url = String(raw || '').trim();
@@ -240,6 +251,12 @@ function createTray() {
         type: 'checkbox',
         checked: interactEnabled,
         click: toggleInteract,
+      },
+      {
+        label: '开机自启',
+        type: 'checkbox',
+        checked: autoStart,
+        click: toggleAutoStart,
       },
       { label: '刷新页面', click: refreshPet },
       { type: 'separator' },
@@ -303,6 +320,8 @@ if (!gotLock) {
     .then(() => {
       log('壳启动 v' + app.getVersion() + ' config=' + CONFIG_PATH);
       const url = readUrl();
+      // 开机自启：启动时同步注册表状态（用户可能在别处改过）
+      app.setLoginItemSettings({ openAtLogin: autoStart, path: process.execPath });
       if (url) {
         log('加载桌宠页: ' + url);
         createPetWindow(url);
