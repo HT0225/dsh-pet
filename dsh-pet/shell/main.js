@@ -80,11 +80,16 @@ let interactEnabled = readConfig().interactEnabled;
 
 /** 建全屏透明置顶主窗并加载桌宠页 */
 function createPetWindow(url) {
-  // 只铺**工作区**（workAreaBounds = 屏幕去掉任务栏的那块，多屏第一版只做主屏）。
+  // 只铺**工作区**（display.workArea = 屏幕去掉任务栏的那块，多屏第一版只做主屏）。
   // 不用完整 bounds 的原因：Windows 任务栏自身是置顶窗口，与本壳的置顶互相抢 z 序（经常是任务栏赢），
   // 用完整屏幕矩形时底部会被任务栏压住；铺工作区后窗口与任务栏**不重叠**，遮挡从根上消失，
   // 页面视口 = 工作区 → 宠物活动范围也自动避开任务栏（不会走到那一条底下去）。
-  const { x, y, width, height } = screen.getPrimaryDisplay().workAreaBounds;
+  // **字段名坑（0.2.2 修复的线上事故）**：Electron 的 Display 没有 workAreaBounds（那是 Win32
+  // MONITORINFO 的名字），只有 workArea（Rectangle）——写错则整行为 undefined，解构直接抛
+  // TypeError，窗口从未创建而进程活着（whenReady 链异常无处可去）→ 表现为"双击没反应、
+  // 进程在跑"。启动链因此另加了 .catch（见下方 whenReady）。
+  const { x, y, width, height } = screen.getPrimaryDisplay().workArea;
+  log(`主窗几何 ${width}x${height} @(${x},${y})（workArea，不含任务栏）`);
   petWin = new BrowserWindow({
     x,
     y,
@@ -110,7 +115,7 @@ function createPetWindow(url) {
     },
   });
   petWin.setAlwaysOnTop(true, 'screen-saver'); // 盖过普通窗口与普通置顶窗
-  log(`主窗创建 ${width}x${height} @(${x},${y}) workArea`);
+  log('主窗创建完成（transparent/topmost/ignore-mouse 已设置）');
   petWin.setIgnoreMouseEvents(true, { forward: true }); // 默认穿透；forward 保留 mousemove 给页面
 
   // 页面 window.open（右键「桌宠设置」等）→ 系统浏览器打开，壳内不开新窗
@@ -280,18 +285,28 @@ if (!gotLock) {
     }
   });
 
-  app.whenReady().then(() => {
-    log('壳启动 v' + app.getVersion() + ' config=' + CONFIG_PATH);
-    const url = readUrl();
-    if (url) {
-      log('加载桌宠页: ' + url);
-      createPetWindow(url);
-      createTray();
-      registerShortcuts();
-    } else {
-      createSetupWindow();
-    }
-  });
+  app.whenReady()
+    .then(() => {
+      log('壳启动 v' + app.getVersion() + ' config=' + CONFIG_PATH);
+      const url = readUrl();
+      if (url) {
+        log('加载桌宠页: ' + url);
+        createPetWindow(url);
+        createTray();
+        registerShortcuts();
+      } else {
+        createSetupWindow();
+      }
+    })
+    .catch((err) => {
+      // 启动链任何异常：留日志 + 弹框 + 退出。**绝不允许"进程活着但没有窗口"**——
+      // 0.2.x 踩过：createPetWindow 里字段名写错抛 TypeError，进程挂着占单实例锁，
+      // 用户表现为双击无反应且之后再也起不来。
+      const msg = err instanceof Error ? err.stack || err.message : String(err);
+      log('启动失败: ' + msg);
+      dialog.showErrorBox('dsh-pet 桌宠壳启动失败', msg + '\n\n（详情见 exe 同目录的 shell.log）');
+      app.quit();
+    });
 }
 
 // 托盘常驻：关窗不退出（本壳只有托盘与退出路径）
