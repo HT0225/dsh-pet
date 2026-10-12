@@ -855,6 +855,50 @@ export function apply(ctx: any): void {
       return { kind: 'json', status: 405, obj: { error: 'method not allowed' } };
     }
 
+    // 原文写用户配置文件（设置页「高级：直接编辑 JSON」）：整文件替换，用于改白名单之外的
+    // 高级字段（whisperPrompt / 模型 / 动画池 / memes / eventsRefreshSec …）——这些字段走
+    // PUT /config 会按「请求体未传」被透传保留，表单永远写不进去，只有这里能落盘。
+    // 校验：顶层必须是对象；pets 若存在必须是「非空 + 结构合法」——结构检查直接复用
+    // saveUserConfig 的同一套规则（id/size/display/position），不另写一套。
+    // 与 PUT /config 的差别：这里不做透传重建（用户看到的就是要写进去的），因此也不需要
+    // force=1 —— 没有任何字段会被静默丢弃。
+    if (rest === 'config/file') {
+      if (method !== 'PUT') return { kind: 'json', status: 405, obj: { error: 'method not allowed' } };
+      let raw: unknown;
+      try {
+        raw = JSON.parse(body ?? '');
+      } catch {
+        return { kind: 'json', status: 400, obj: { error: 'invalid JSON body' } };
+      }
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+        return { kind: 'json', status: 400, obj: { error: '顶层必须是 JSON 对象（形如 { pets: [...] }）' } };
+      }
+      const obj = raw as Record<string, unknown>;
+      if (obj.pets !== undefined) {
+        const ok = Array.isArray(obj.pets) && obj.pets.length > 0 && saveUserConfig({ pets: obj.pets }) !== null;
+        if (!ok) {
+          return {
+            kind: 'json',
+            status: 400,
+            obj: {
+              error:
+                'pets 结构非法：需要非空数组，且每只含 id / size / balanceEnabled / display / position:{corner,marginX,marginY}',
+            },
+          };
+        }
+      }
+      try {
+        await mkdir(userRoot, { recursive: true });
+        await writeFile(userConfigPath, JSON.stringify(obj, null, 2), 'utf8');
+      } catch (e) {
+        return { kind: 'json', status: 500, obj: { error: e instanceof Error ? e.message : String(e) } };
+      }
+      void syncDesktop(); // 内容可能改了 display/size：与 PUT 同一条重载路径
+      // 只回「写成功 + 落盘位置」，不回成品聚合：成品需要读 assets/config.jsonc（源码形态下不可达），
+      // 而这个端点的成败只取决于写盘；设置页拿到 ok 后自己再 GET /config 刷新即可。
+      return { kind: 'json', status: 200, obj: { ok: true, user: userConfigPath } };
+    }
+
     // 桌面端「重载配置」（右键菜单 → POST /reload）：重启桌面 Helper，全部桌面宠物窗口按最新配置重建。
     // 与保存走**同一条**重启路径（syncDesktop：串行队列 + 等旧进程真正退出再起新的），
     // 所以宠物数量 / display / size 的变化同样生效——渲染端就地重拉配置做不到这几项

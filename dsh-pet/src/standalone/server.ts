@@ -107,11 +107,13 @@ function fail(res: ServerResponse, error: unknown, logger: StandaloneLogger): vo
 /** 浏览器页形态可托管的桌面渲染端文件白名单（固定名单，杜绝路径穿越） */
 const WEB_FILES: Record<string, string> = {
   'index.html': 'text/html; charset=utf-8',
+  'settings.html': 'text/html; charset=utf-8',
   'shared-core.js': 'text/javascript; charset=utf-8',
   'constants.js': 'text/javascript; charset=utf-8',
   'sprite.js': 'text/javascript; charset=utf-8',
   'events.js': 'text/javascript; charset=utf-8',
   'renderer.js': 'text/javascript; charset=utf-8',
+  'settings.js': 'text/javascript; charset=utf-8',
 };
 
 /** 从 Cookie 头里取指定名（无则 null） */

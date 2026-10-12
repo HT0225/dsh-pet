@@ -135,6 +135,7 @@ async function run(logger: StandaloneLogger, options: CliOptions): Promise<void>
     `  插件        dsh-pet@${packageVersion(packageRoot)}  ${packageRoot}`,
     `  监听        http://${options.host}:${server.port}/`,
     `  浏览器页    http://${shownHost}:${server.port}/pet/${query}   ← 本机浏览器直接打开即可看到桌宠`,
+    `  设置页      http://${shownHost}:${server.port}/pet/settings.html${query}   ← 宠物 / 全局 / 物理配置`,
     `  接口        http://${options.host}:${server.port}/dsh-pet-7340/`,
     token === null ? '  鉴权        无（仅回环监听）' : `  鉴权        需带令牌（?token=… 或同名 Cookie）`,
     `  配置        ${configSource}`,

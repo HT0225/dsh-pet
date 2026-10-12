@@ -1,0 +1,449 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- 只加载同源资源与同源脚本；样式与图标走内联（本页自带一份 CSS 与内联 SVG 字符号） -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self' http: https: data:; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' http: https: data:; font-src 'self' http: https: data:"
+    />
+    <title>桌宠设置 · dsh-pet</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: #f6f7f9;
+        color: #1f2430;
+        font-family:
+          'Microsoft YaHei UI',
+          'PingFang SC',
+          'Segoe UI',
+          -apple-system,
+          sans-serif;
+        font-size: 14px;
+        line-height: 1.6;
+      }
+      a {
+        color: #2f6fed;
+        text-decoration: none;
+      }
+      a:hover {
+        text-decoration: underline;
+      }
+      .wrap {
+        max-width: 860px;
+        margin: 0 auto;
+        padding: 20px 16px 96px;
+      }
+      header.hd {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        margin-bottom: 18px;
+      }
+      header.hd h1 {
+        margin: 0;
+        font-size: 20px;
+        font-weight: 700;
+      }
+      header.hd .sub {
+        margin: 2px 0 0;
+        color: #6b7280;
+        font-size: 12.5px;
+      }
+      header.hd nav {
+        margin-left: auto;
+        display: flex;
+        gap: 12px;
+        font-size: 13px;
+      }
+      section.card {
+        background: #fff;
+        border: 1px solid #e5e7eb;
+        border-radius: 12px;
+        padding: 16px 16px 18px;
+        margin-bottom: 16px;
+      }
+      section.card > h2 {
+        margin: 0 0 4px;
+        font-size: 15.5px;
+        font-weight: 700;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      section.card > .hint {
+        margin: 4px 0 14px;
+        color: #6b7280;
+        font-size: 12.5px;
+      }
+      .pet-card {
+        border: 1px solid #e5e7eb;
+        border-radius: 10px;
+        padding: 12px;
+        margin-bottom: 12px;
+        background: #fbfcfe;
+      }
+      .pet-card.is-hidden {
+        opacity: 0.72;
+      }
+      .pet-head {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 10px;
+      }
+      .pet-idx {
+        width: 24px;
+        height: 24px;
+        border-radius: 50%;
+        background: #2f6fed;
+        color: #fff;
+        font-size: 12px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex: none;
+      }
+      .pet-head .id {
+        color: #9ca3af;
+        font-size: 12px;
+        font-family: ui-monospace, Menlo, Consolas, monospace;
+      }
+      .pet-head .grow {
+        flex: 1;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+        gap: 12px 16px;
+      }
+      label.field {
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+        font-size: 12.5px;
+        color: #4b5563;
+        min-width: 0;
+      }
+      label.field > span.lbl {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      input[type='text'],
+      input[type='number'],
+      select {
+        height: 32px;
+        padding: 0 9px;
+        border: 1px solid #d4d7dd;
+        border-radius: 8px;
+        background: #fff;
+        color: #1f2430;
+        font-size: 13.5px;
+        font-family: inherit;
+        min-width: 0;
+        width: 100%;
+      }
+      input[type='text']:focus,
+      input[type='number']:focus,
+      select:focus {
+        outline: none;
+        border-color: #2f6fed;
+        box-shadow: 0 0 0 3px rgba(47, 111, 237, 0.15);
+      }
+      input[readonly] {
+        background: #f1f2f4;
+        color: #8b909a;
+      }
+      input[type='range'] {
+        width: 100%;
+        accent-color: #2f6fed;
+      }
+      .range-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .range-row output {
+        min-width: 46px;
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+        color: #1f2430;
+        font-size: 13px;
+      }
+      .corners {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 6px;
+      }
+      .corners label {
+        border: 1px solid #d4d7dd;
+        border-radius: 8px;
+        padding: 6px 4px;
+        text-align: center;
+        font-size: 12px;
+        cursor: pointer;
+        background: #fff;
+        color: #4b5563;
+        user-select: none;
+      }
+      .corners label:hover {
+        border-color: #b9c4dd;
+      }
+      .corners input {
+        position: absolute;
+        opacity: 0;
+        pointer-events: none;
+      }
+      .corners label.on {
+        border-color: #2f6fed;
+        background: #eaf1ff;
+        color: #1b4fbd;
+        font-weight: 600;
+      }
+      .toggles {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 12px;
+      }
+      .toggle {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        border: 1px solid #d4d7dd;
+        background: #fff;
+        border-radius: 999px;
+        padding: 5px 11px;
+        font-size: 12.5px;
+        color: #4b5563;
+        cursor: pointer;
+        user-select: none;
+      }
+      .toggle:hover {
+        border-color: #b9c4dd;
+      }
+      .toggle.on {
+        border-color: #2f6fed;
+        background: #eaf1ff;
+        color: #1b4fbd;
+      }
+      .toggle input {
+        position: absolute;
+        opacity: 0;
+        pointer-events: none;
+      }
+      .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: #c7cbd3;
+        flex: none;
+      }
+      .toggle.on .dot {
+        background: #2f6fed;
+      }
+      .btn {
+        height: 32px;
+        padding: 0 14px;
+        border-radius: 8px;
+        border: 1px solid #d4d7dd;
+        background: #fff;
+        color: #1f2430;
+        font-size: 13px;
+        font-family: inherit;
+        cursor: pointer;
+      }
+      .btn:hover {
+        border-color: #b9c4dd;
+        background: #f7f8fa;
+      }
+      .btn.primary {
+        background: #2f6fed;
+        border-color: #2f6fed;
+        color: #fff;
+      }
+      .btn.primary:hover {
+        background: #245ed6;
+      }
+      .btn.danger {
+        color: #c62828;
+        border-color: #efc8c8;
+      }
+      .btn.danger:hover {
+        background: #fdf1f1;
+        border-color: #e6a5a5;
+      }
+      .btn.small {
+        height: 26px;
+        padding: 0 9px;
+        font-size: 12.5px;
+      }
+      .btn:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      .row {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        align-items: center;
+      }
+      dl.meta {
+        display: grid;
+        grid-template-columns: 96px 1fr;
+        gap: 6px 12px;
+        margin: 0 0 14px;
+        font-size: 13px;
+      }
+      dl.meta dt {
+        color: #6b7280;
+      }
+      dl.meta dd {
+        margin: 0;
+        font-family: ui-monospace, Menlo, Consolas, monospace;
+        font-size: 12.5px;
+        word-break: break-all;
+      }
+      .hint {
+        color: #6b7280;
+        font-size: 12.5px;
+        margin: 6px 0;
+      }
+      .err {
+        color: #c62828;
+        font-size: 12.5px;
+        margin: 6px 0;
+        white-space: pre-wrap;
+      }
+      /* 底部操作条 */
+      .bar {
+        position: fixed;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(255, 255, 255, 0.96);
+        border-top: 1px solid #e5e7eb;
+        backdrop-filter: blur(6px);
+        padding: 10px 16px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      .bar .inner {
+        max-width: 860px;
+        margin: 0 auto;
+        width: 100%;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      #status {
+        font-size: 13px;
+        color: #6b7280;
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      #status.dirty {
+        color: #b26a00;
+      }
+      #status.ok {
+        color: #187a4b;
+      }
+      #status.bad {
+        color: #c62828;
+      }
+      footer.note {
+        color: #6b7280;
+        font-size: 12.5px;
+        margin-top: 4px;
+      }
+      @media (max-width: 560px) {
+        .grid {
+          grid-template-columns: 1fr;
+        }
+        .corners {
+          grid-template-columns: repeat(2, 1fr);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header class="hd">
+        <div>
+          <h1>桌宠设置</h1>
+          <p class="sub">独立模式 · 保存即写入配置文件，并自动同步到已打开的桌宠页</p>
+        </div>
+        <nav>
+          <a href="./">打开桌宠页</a>
+          <a href="./?panel=1">桌宠 + 设置并排</a>
+        </nav>
+      </header>
+
+      <section class="card">
+        <h2>宠物 <button class="btn small" id="add-pet">＋ 添加宠物</button></h2>
+        <p class="hint">
+          浏览器页显示 <b>web / both</b> 的宠物，桌面小窗显示
+          <b>desktop / both</b> 的宠物；「隐藏」表示两端都不显示但保留配置。
+        </p>
+        <div id="pet-list"></div>
+        <p class="hint" id="file-pets"></p>
+        <p class="err" id="pet-err"></p>
+      </section>
+
+      <section class="card">
+        <h2>全局行为</h2>
+        <p class="hint">这些开关写进用户配置文件，对全部宠物生效。</p>
+        <div class="grid" id="global-fields"></div>
+      </section>
+
+      <section class="card">
+        <h2>拖拽与抛掷</h2>
+        <p class="hint">手感参数（物理）：改完保存，桌宠页下次拾起与抛掷立即按新参数算。</p>
+        <div class="grid" id="physics-fields"></div>
+        <div class="toggles" id="physics-toggles"></div>
+      </section>
+
+      <section class="card" id="sec-files">
+        <h2>文件与同步</h2>
+        <dl class="meta" id="paths"></dl>
+        <div class="row">
+          <button class="btn" id="btn-reload">重载桌面小窗</button>
+          <button class="btn danger" id="btn-reset">恢复内置默认配置</button>
+          <button class="btn" id="btn-json">查看 / 编辑 JSON</button>
+        </div>
+        <p class="hint">
+          「恢复默认」会把包内默认配置整份覆盖用户配置（含你手改的精调字段）；「查看 / 编辑 JSON」直接改用户配置文件——
+          模型、动画池、AI 人设、表情包等高级字段只在这里可改。
+        </p>
+        <p class="err" id="file-err"></p>
+      </section>
+
+      <footer class="note">
+        独立模式下余额 / 碎碎念 / 对话 / 系统通知依赖 DSH
+        的凭证、模型与会话，当前不可用（点了会给出结构化提示，不会假装成功）。
+      </footer>
+    </div>
+
+    <div class="bar">
+      <div class="inner">
+        <span id="status">正在加载配置…</span>
+        <button class="btn" id="btn-discard">放弃更改</button>
+        <button class="btn primary" id="btn-save" disabled>保存</button>
+      </div>
+    </div>
+
+    <script src="./settings.js"></script>
+  </body>
+</html>

@@ -15,7 +15,7 @@
  */
 import { after, before, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -159,5 +159,104 @@ describe('独立服务自己的端点', () => {
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), { ok: true, stopping: true });
     assert.equal((await get('/dsh-pet-7340/state')).status, 200, '测试里没人真的停机：服务应继续可用');
+  });
+});
+
+describe('PUT /dsh-pet-7340/config/file —— 原文写用户配置（设置页「高级 JSON」的落盘口）', () => {
+  /** 一只结构完全合法的宠物（与 saveUserConfig 的必填字段一一对齐） */
+  const pet = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+    id: 'main',
+    name: '蓝毛小女仆',
+    size: 462,
+    balanceEnabled: true,
+    display: 'both',
+    position: { corner: 'bottom-right', marginX: 24, marginY: 24 },
+    ...over,
+  });
+
+  async function send(path: string, method: string, body?: unknown): Promise<{ status: number; json: () => unknown }> {
+    const response = await fetch(`${base}${path}`, {
+      method,
+      headers: body === undefined ? undefined : { 'content-type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    const text = await response.text();
+    return { status: response.status, json: () => JSON.parse(text) as unknown };
+  }
+
+  test('只开写：GET → 405', async () => {
+    assert.equal((await send('/dsh-pet-7340/config/file', 'GET')).status, 405);
+  });
+
+  test('顶层必须是 JSON 对象：坏 JSON 与数组都 400', async () => {
+    const badJson = await fetch(`${base}/dsh-pet-7340/config/file`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: '{oops',
+    });
+    assert.equal(badJson.status, 400);
+    assert.equal((await send('/dsh-pet-7340/config/file', 'PUT', [1, 2, 3])).status, 400);
+    assert.equal((await send('/dsh-pet-7340/config/file', 'PUT', 'just a string')).status, 400);
+  });
+
+  test('pets 存在就必须是「非空 + 结构合法」（复用 saveUserConfig 同一套规则）', async () => {
+    assert.equal((await send('/dsh-pet-7340/config/file', 'PUT', { pets: [] })).status, 400, '空 pets');
+    assert.equal((await send('/dsh-pet-7340/config/file', 'PUT', { pets: [{}] })).status, 400, '缺必填字段');
+    assert.equal(
+      (await send('/dsh-pet-7340/config/file', 'PUT', { pets: [pet({ size: -5 })] })).status,
+      400,
+      'size 非法',
+    );
+    assert.equal(
+      (await send('/dsh-pet-7340/config/file', 'PUT', { pets: [pet({ display: 'weird' })] })).status,
+      400,
+      'display 非法',
+    );
+    assert.equal(
+      (await send('/dsh-pet-7340/config/file', 'PUT', { pets: [pet({ id: '../escape' })] })).status,
+      400,
+      'id 含路径穿越字符',
+    );
+    assert.equal(
+      (
+        await send('/dsh-pet-7340/config/file', 'PUT', {
+          pets: [pet({ position: { corner: 'middle', marginX: 1, marginY: 1 } })],
+        })
+      ).status,
+      400,
+      'corner 非法',
+    );
+  });
+
+  test('合法请求 → 200，且原文落盘（白名单之外的 whisperPrompt 一并写进去）', async () => {
+    const payload = { pets: [pet()], whisperPrompt: '你是一只测试小鱼', chatMemoryRounds: 7 };
+    const response = await send('/dsh-pet-7340/config/file', 'PUT', payload);
+    assert.equal(response.status, 200);
+    const body = response.json() as { ok?: boolean; user?: string };
+    assert.equal(body.ok, true);
+
+    const written = JSON.parse(readFileSync(configPathsFor(packageRoot, home).userFile, 'utf8')) as Record<
+      string,
+      unknown
+    >;
+    // 原文写入：PUT /config 的白名单放不进来的字段，在这里必须原样留存
+    assert.equal(written.whisperPrompt, '你是一只测试小鱼');
+    assert.equal(written.chatMemoryRounds, 7);
+    const pets = written.pets as Array<Record<string, unknown>>;
+    assert.equal(pets.length, 1);
+    assert.equal(pets[0]?.id, 'main');
+    assert.equal(pets[0]?.size, 462);
+    assert.deepEqual(pets[0]?.position, { corner: 'bottom-right', marginX: 24, marginY: 24 });
+  });
+
+  test('不带 pets 的对象也接受（= 清空用户层，读取侧回落内置默认）', async () => {
+    const response = await send('/dsh-pet-7340/config/file', 'PUT', { whisperPrompt: '只改人设' });
+    assert.equal(response.status, 200);
+    const written = JSON.parse(readFileSync(configPathsFor(packageRoot, home).userFile, 'utf8')) as Record<
+      string,
+      unknown
+    >;
+    assert.equal(written.whisperPrompt, '只改人设');
+    assert.equal(written.pets, undefined, '没传 pets 就不该凭空造 pets');
   });
 });

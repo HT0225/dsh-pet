@@ -39,8 +39,10 @@ class FakeRes {
     return this;
   }
 
-  end(chunk?: string): void {
-    if (typeof chunk === 'string') this.chunks.push(chunk);
+  end(chunk?: string | Buffer): void {
+    // 静态文件是 Buffer（server 用 readFile 直接回），桩必须同样收下，否则 body 断言拿到空串
+    if (chunk === undefined) return;
+    this.chunks.push(typeof chunk === 'string' ? chunk : chunk.toString('utf8'));
   }
 
   destroy(): void {
@@ -275,6 +277,18 @@ describe('浏览器页形态 —— /pet 托管（同一份 runtime/electron-hel
     const script = await settled(call(listener, '/pet/sprite.js'));
     assert.equal(script.status, 200);
     assert.match(String(script.headers['content-type']), /javascript/);
+  });
+
+  test('设置页也在白名单里（桌宠页右键菜单直接跳转的目标）', async () => {
+    const listener = createRequestListener({ routes: [], logger: silent, webRoot: HELPER_WEB_ROOT });
+    const page = await settled(call(listener, '/pet/settings.html'));
+    assert.equal(page.status, 200);
+    assert.match(String(page.headers['content-type']), /text\/html/);
+    const js = await settled(call(listener, '/pet/settings.js'));
+    assert.equal(js.status, 200);
+    assert.match(String(js.headers['content-type']), /javascript/);
+    // 设置页引的是同目录相对脚本：页面在 /pet/settings.html → ./settings.js 落到 /pet/settings.js
+    assert.match(page.body(), /src="\.\/settings\.js"/);
   });
 
   test('白名单之外一律 404（目录穿越与任意文件都不放行）', () => {

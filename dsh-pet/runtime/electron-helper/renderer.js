@@ -155,5 +155,13 @@ window.addEventListener('resize', () => {
   }
 });
 
+// 设置页保存后经 localStorage 发一次信号（dsh-pet-rev）：收到就重新 boot——宠物数量 / display /
+// 尺寸 / 角度都可能变，只能整只重建（boot 内部先 dispose 旧 sprite），不必手动刷新页面。
+// storage 事件只在**别的**标签页触发，设置页自己不会反复重建。
+window.addEventListener('storage', (event) => {
+  if (event.key !== 'dsh-pet-rev' || !event.newValue) return;
+  void boot();
+});
+
 injectAssets();
 void boot();
