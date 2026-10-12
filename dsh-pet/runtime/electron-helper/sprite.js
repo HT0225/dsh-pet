@@ -671,9 +671,8 @@ class PetSprite {
     }
   }
 
-  // ---- 跟随鼠标（mode='follow'）：rAF 朝光标**水平**走动（只左右跟、不上下飞） ----
-  // 为什么只左右：漫游/拖拽全都是"地面生物"语义（planMove 只算 x，y 恒定），动画池里也只有
-  // 走路没有飞行——上下平移会变成"贴地滑行"的怪相。光标在高处时宠物走到其正下方即止。
+  // ---- 跟随鼠标（mode='follow'）：rAF 朝光标自由移动（XY 都跟，沿目标方向走直线） ----
+  // 漫游/拖拽都是"地面生物"语义，但跟随模式下宠物可以走到光标的 y 位置（包括往上走）——
 
   /** 取最新光标位置（视口坐标）：mousemove 与壳侧推送**取较新者**，没有则 null（跟随空转） */
   cursorNow() {
@@ -693,33 +692,39 @@ class PetSprite {
     if (front) front.style.transform = f === 'right' ? 'scaleX(-1)' : '';
   }
 
-  /** 跟随单帧：朝光标走一步（限速 + 半身位死区），到位/被占用时停在原地 */
+  /** 跟随单帧：朝光标自由移动（XY 都跟），到位/被占用时停在原地 */
   followTick(dt) {
     const cur = this.cursorNow();
     if (!cur) return;
     // 手握宠物、飞行、右键菜单、对话框、点击回应动画期间：跟随让位（这些交互优先）
     if (this.dragState.active || this.throwRef !== null || this.menuOpen || this.chatOpen) return;
     if (this.once && this.animations.clicks.includes(this.anim)) return;
-    // 目标夹进显示器并集：光标在任务栏条/屏外时，走到最近的屏幕边缘即止（绝不走进空洞）
+    // 目标夹进显示器并集：光标在屏外/空洞时，走到最近的屏幕边缘即止
     const t = S.clampPointToRegion(AREAS, cur.x, cur.y);
     if (!t) return;
     const cx = this.pos.x + this.halfW;
     const cy = this.pos.y + this.halfH;
     const dx = t.x - cx;
-    const dead = Math.max(24, this.halfW * 0.5); // 水平死区：半个身位，走到光标正下方就算到
-    if (Math.abs(dx) <= dead) {
+    const dy = t.y - cy;
+    const dist = Math.hypot(dx, dy);
+    const dead = Math.max(20, this.halfW * 0.4); // 圆形死区：约 0.4 倍身宽，走到光标附近即停
+    if (dist <= dead) {
       // 到位：还在播走路动画就回随机链（follow 模式掷骰按 fixed 算，只会选原地动画）
       const moves = this.animations.moves.actions.map((a) => a.name);
       if (moves.includes(this.anim)) this.playIdle();
       return;
     }
     const distScale = this.size / S.PET_REF_WIDTH;
-    const step = Math.min(FOLLOW_SPEED * distScale * dt, Math.abs(dx) - dead);
-    const nx = cx + (dx > 0 ? step : -step);
-    this.setFacing(dx > 0 ? 'right' : 'left');
+    const stepLen = Math.min(FOLLOW_SPEED * distScale * dt, dist - dead);
+    // 沿目标方向走一步（XY 自由），dist>0 保证不除零（上面已保证 dist>dead>0）
+    const ratio = stepLen / dist;
+    const nx = cx + dx * ratio;
+    const ny = cy + dy * ratio;
+    // 朝向：以水平分量为主（动画资产左右朝向，垂直分量不翻转——上下走时保持当前朝向）
+    if (Math.abs(dx) > 4) this.setFacing(dx > 0 ? 'right' : 'left');
     // 同步会话位置（resize/relayout 的 position() 会按它复位，不更新会被拉回旧落点）
-    this.customPos = { rx: nx / VIEW.w, ry: cy / VIEW.h };
-    this.sendBounds(nx - this.halfW, this.pos.y);
+    this.customPos = { rx: nx / VIEW.w, ry: ny / VIEW.h };
+    this.sendBounds(nx - this.halfW, ny - this.halfH);
     // 走路动画：不在走路池里就切到跟随专用走路动画（loop 播放，不触发 ended → 不与随机链打架）
     const walk = this.followWalk;
     if (walk && this.anim !== walk && !this.pending) {
@@ -1156,9 +1161,15 @@ class PetSprite {
       } else {
         // customPos 语义 = 宠物**中心**比例（position() 用 rx*W - halfW 还原左上角；
         // startThrow 落定也按同一公式存），松手无边界夹取
-        this.customPos = { rx: (px + this.halfW) / VIEW.w, ry: (py + this.halfH) / VIEW.h };
+        // **夹进工作区**：用户可以拖宠物到任务栏那条边/屏幕外（宠物被遮挡/不可见），
+        // 松手后用 clampPointToRegion 把中心拉回最近的显示器工作区内，宠物永远可见。
+        const clamped = S.clampPointToRegion(AREAS, px + this.halfW, py + this.halfH);
+        this.customPos = {
+          rx: clamped.x / VIEW.w,
+          ry: clamped.y / VIEW.h,
+        };
         this.position();
-        // 释放后的最终窗口位置（position() 换算后，松手无夹取），冒烟断言"释放不位移"用
+        // 释放后的最终窗口位置（position() 换算后），冒烟断言"释放不位移"用
         window.__dshPetDebug.lastDragRelease = { x: this.pos.x, y: this.pos.y };
       }
     }
