@@ -64,21 +64,32 @@ async function boot() {
     const cfg = await loadConfig();
     config = cfg;
     hideError();
-    const pets = cfg.pets.filter((p) => S.isDesktopVisible(p.display));
+    // 可见性口径按形态分：桌面小窗 = display 含 desktop/both；浏览器页 = 含 web/both
+    // （与浏览器 overlay 的 isWebVisible 同一规则，见 src/shared/config.ts）。
+    const pets = cfg.pets.filter((p) => (IS_WINDOWED ? S.isDesktopVisible(p.display) : S.isWebVisible(p.display)));
     if (pets.length === 0) {
-      showError('配置中没有 display 为 desktop/both 的宠物，桌面模式不显示宠物');
-      scheduleReboot();
-      return;
-    }
-    // 本窗口只承载一只宠物：petIndex 由主进程按 DSH_PET_PETS 顺序注入
-    const pet = pets[CONFIG.petIndex];
-    if (!pet) {
-      showError('petIndex=' + CONFIG.petIndex + ' 超出桌面宠物列表（共 ' + pets.length + ' 只），本窗口不创建宠物');
+      showError(
+        IS_WINDOWED
+          ? '配置中没有 display 为 desktop/both 的宠物，桌面模式不显示宠物'
+          : '配置中没有 display 为 web/both 的宠物，浏览器页不显示宠物',
+      );
       scheduleReboot();
       return;
     }
     for (const s of sprites) s.dispose();
-    sprites = [new PetSprite(pet)];
+    if (IS_WINDOWED) {
+      // 桌面形态：本窗口只承载一只宠物（petIndex 由主进程按 DSH_PET_PETS 顺序注入）
+      const pet = pets[CONFIG.petIndex];
+      if (!pet) {
+        showError('petIndex=' + CONFIG.petIndex + ' 超出桌面宠物列表（共 ' + pets.length + ' 只），本窗口不创建宠物');
+        scheduleReboot();
+        return;
+      }
+      sprites = [new PetSprite(pet)];
+    } else {
+      // 浏览器页形态：整页就是活动区，一次把全部可见宠物都摆出来（各自按配置的角落/边距落位）
+      sprites = pets.map((pet) => new PetSprite(pet));
+    }
     window.__dshPetDebug.configOk = true;
     window.__dshPetDebug.spriteCount = sprites.length;
     for (const s of sprites) s.playIdle();
@@ -128,7 +139,16 @@ if (window.petBridge && window.petBridge.onDisplays) {
 // 守卫：拖拽/飞行/漫游中**绝不**重设位置——这三种状态下位置由输入或物理驱动，而 position()
 // 会把宠物拉回 customPos（上一次的落点）。跨屏时 Windows 会因 WM_DPICHANGED 主动改窗口尺寸，
 // 那正好落在拖拽/飞行过程中，不设防就会看到宠物瞬间跳回上一个落点。
+// 浏览器页形态：视口就是窗口（innerWidth/Height），尺寸变化即「换了一块屏」——先重挂几何再摆位
+// （桌面形态由主进程 pet:displays 推几何，这里只管窗口内容区异常）。
 window.addEventListener('resize', () => {
+  if (!IS_WINDOWED && window.innerWidth > 0 && window.innerHeight > 0) {
+    const rect = { x: 0, y: 0, width: window.innerWidth, height: window.innerHeight };
+    if (applyDeskGeometry({ hull: rect, areas: [rect], panels: [rect], primaryIndex: 0 })) {
+      for (const s of sprites) s.relayout();
+      return; // relayout 已按新几何摆位，无需再 position()
+    }
+  }
   for (const s of sprites) {
     if (s.dragState.active || s.throwRef !== null || s.moveRef !== null) continue;
     s.position();

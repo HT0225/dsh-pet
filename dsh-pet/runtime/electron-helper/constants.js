@@ -9,8 +9,21 @@
 const S = window.PetShared;
 
 const params = new URLSearchParams(location.search);
+// 运行形态：桌面 helper（Electron 窗口，preload 注入 petBridge）vs 浏览器页（同一份渲染代码
+// 经独立模式的 /pet/ 托管在普通浏览器里跑）。两种形态的差异只有「有没有窗口可移」——
+// 坐标口径集中在 constants/sprite 的 winOrigin/winSize 与 sendBounds，其余逻辑完全共用。
+const IS_WINDOWED = !!window.petBridge;
 const CONFIG = {
-  configUrl: params.get('configUrl') || 'http://127.0.0.1:3080/dsh-pet-7340/config',
+  // 浏览器页形态（经 HTTP 托管）：同源即宿主，按当前页面直接拼；桌面形态由主进程注入 configUrl。
+  // file:// 下缺参数时仍回落到本机默认（start-desktop / 手工打开 index.html 的兜底路径）。
+  configUrl: (() => {
+    const given = params.get('configUrl');
+    if (given) return given;
+    if (location.protocol === 'http:' || location.protocol === 'https:') {
+      return location.origin + '/dsh-pet-7340/config';
+    }
+    return 'http://127.0.0.1:3080/dsh-pet-7340/config';
+  })(),
   scale: Number(params.get('scale') || '1'),
   petIndex: Number(params.get('petIndex') || '0'),
 };
@@ -42,8 +55,14 @@ const BRIDGE = params.get('bridge') === '1';
 const VIEW_SCREEN = {
   x: Number(params.get('workAreaX') || 0),
   y: Number(params.get('workAreaY') || 0),
-  w: Number(params.get('workAreaW') || (window.screen && window.screen.availWidth) || 1920),
-  h: Number(params.get('workAreaH') || (window.screen && window.screen.availHeight) || 1080),
+  // 浏览器页形态没有主进程注入几何：「视口」就是页面可视区（innerWidth/Height）；
+  // 桌面形态用屏幕工作区（screen.avail*），两者都只是初始值，运行期由各自的通道刷新。
+  w: Number(
+    params.get('workAreaW') || (IS_WINDOWED ? window.screen && window.screen.availWidth : window.innerWidth) || 1920,
+  ),
+  h: Number(
+    params.get('workAreaH') || (IS_WINDOWED ? window.screen && window.screen.availHeight : window.innerHeight) || 1080,
+  ),
 };
 const VIEW = {
   x: toLocal(VIEW_SCREEN.x),

@@ -20,6 +20,8 @@
  * （结构化失败 + 日志，不假装成功）。详见 README 的「独立运行（不打开 DSH）」一节。
  */
 import { existsSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { join } from 'node:path';
 
 import { flattenPetList, readAllConfig } from '../host/config';
 import { dshHomeDir, packageRoot } from '../host/helper-process';
@@ -31,11 +33,16 @@ import {
   type RegisteredRoute,
   type StandaloneLogger,
 } from './context';
-import { configPathsFor, describePets, isDesktopVisible, parseArgs, USAGE } from './options';
+import { configPathsFor, describePets, isDesktopVisible, type CliOptions, parseArgs, USAGE } from './options';
 import { listenStandaloneServer } from './server';
 
+/** 回环地址判定：只有这些地址才允许免令牌（本机自用） */
+function isLoopbackHost(host: string): boolean {
+  return host === '127.0.0.1' || host === '::1' || host === 'localhost';
+}
+
 /** 启动独立模式：先起服务拿到端口，再 `apply`（插件据此拼桌面 Helper 的 configUrl） */
-async function run(logger: StandaloneLogger, options: { port: number }): Promise<void> {
+async function run(logger: StandaloneLogger, options: CliOptions): Promise<void> {
   const home = dshHomeDir();
   const paths = configPathsFor(packageRoot, home);
 
@@ -49,6 +56,16 @@ async function run(logger: StandaloneLogger, options: { port: number }): Promise
     return;
   }
 
+  // 对外监听（非回环）且未指定令牌 → 自动生成一个随机令牌：独立模式没有鉴权之外的门，
+  // 裸暴露等于「谁访问谁控制」（可 POST /anim、/whisper，甚至 /shutdown）。回环自用不生成。
+  let token = options.token;
+  if (token === null && !isLoopbackHost(options.host)) {
+    token = randomBytes(18).toString('base64url');
+    logger.warn(`监听 ${options.host} 是对外地址：已自动生成访问令牌（未指定 --token）`);
+  }
+  // 浏览器页静态文件来自随包发行的 runtime/electron-helper（与桌面形态同一份源码）
+  const webRoot = join(packageRoot, 'runtime', 'electron-helper');
+
   const routes: RegisteredRoute[] = [];
   const portRef = { value: options.port };
   const context = createStandaloneContext({ port: () => portRef.value, logger, routes });
@@ -59,10 +76,14 @@ async function run(logger: StandaloneLogger, options: { port: number }): Promise
     routes,
     logger,
     port: options.port,
+    host: options.host,
+    token,
+    webRoot,
     status: () => ({
       name: 'dsh-pet-standalone',
       plugin: { root: packageRoot, version: packageVersion(packageRoot) },
       port: portRef.value,
+      host: options.host,
       uptimeSec: Math.round(process.uptime()),
     }),
     onShutdown: () => forwardShutdown(),
@@ -105,16 +126,22 @@ async function run(logger: StandaloneLogger, options: { port: number }): Promise
     );
   }
   const desktopVisible = pets.filter(isDesktopVisible);
+  // 页面地址里回环地址要替换成用户实际能访问的地址：监听 0.0.0.0 时打印本机 LAN IP 更可操作
+  const shownHost = options.host === '0.0.0.0' || options.host === '::' ? '<本机 IP>' : options.host;
+  const query = token === null ? '' : `?token=${encodeURIComponent(token)}`;
   for (const line of [
     '',
     '===== dsh-pet 独立模式（不需要 DSH）=====',
     `  插件        dsh-pet@${packageVersion(packageRoot)}  ${packageRoot}`,
-    `  路由        http://127.0.0.1:${server.port}/dsh-pet-7340/`,
+    `  监听        http://${options.host}:${server.port}/`,
+    `  浏览器页    http://${shownHost}:${server.port}/pet/${query}   ← 本机浏览器直接打开即可看到桌宠`,
+    `  接口        http://${options.host}:${server.port}/dsh-pet-7340/`,
+    token === null ? '  鉴权        无（仅回环监听）' : `  鉴权        需带令牌（?token=… 或同名 Cookie）`,
     `  配置        ${configSource}`,
     `  宠物        ${describePets(pets)}`,
     desktopVisible.length === 0
       ? '  桌面小窗    0 只：display 需要 desktop 或 both 才会出现透明小窗（服务仍在运行）'
-      : `  桌面小窗    ${desktopVisible.length} 只`,
+      : `  桌面小窗    ${desktopVisible.length} 只（无图形环境时自动跳过）`,
     '  不可用      余额 / 碎碎念 / 对话 / 系统通知（依赖 DSH 的凭证、模型与会话）',
     '  退出        Ctrl+C，或 POST /shutdown',
     '',

@@ -14,9 +14,16 @@ import { DEFAULT_STANDALONE_PORT } from './server';
 /** 命令行解析结果 */
 export interface CliOptions {
   port: number;
+  /** 监听地址（默认只听本机；对外提供浏览器页时用 0.0.0.0） */
+  host: string;
+  /** 访问令牌：null = 不鉴权（默认本机监听时）；对外监听缺省时由 cli 自动生成随机令牌 */
+  token: string | null;
   check: boolean;
   help: boolean;
 }
+
+/** 默认监听地址（只听回环，安全默认） */
+export const DEFAULT_STANDALONE_HOST = '127.0.0.1';
 
 /** `--help` 正文 */
 export const USAGE = `dsh-pet 独立模式（不需要 DSH）
@@ -25,11 +32,14 @@ export const USAGE = `dsh-pet 独立模式（不需要 DSH）
 
 选项：
   --port <端口>   监听端口（默认 ${DEFAULT_STANDALONE_PORT}；被占用时自动向后顺延）
+  --host <地址>   监听地址（默认 ${DEFAULT_STANDALONE_HOST}；浏览器页远程访问用 0.0.0.0）
+  --token <令牌>  访问令牌：所有请求须带 ?token= 或同名 Cookie；对外监听（非回环地址）
+                  且未指定时自动生成随机令牌并打印带令牌的页面地址
   --check         只体检：打印配置来源、宠物清单与 Electron 状态，不启动窗口
   -h, --help      显示本帮助
 
 说明：
-  桌宠在独立模式下以「透明置顶小窗」运行；浏览器内浮层需要有 DSH 网页，独立模式不提供。
+  桌宠在独立模式下以「透明置顶小窗」运行；浏览器页形态访问 /pet（本机回环默认免令牌）。
   余额 / 碎碎念 / 对话 / 系统通知依赖 DSH 的服务，在独立模式下不可用。
 `;
 
@@ -39,7 +49,13 @@ export const USAGE = `dsh-pet 独立模式（不需要 DSH）
  * @returns 选项，或 `{ error }`（调用方打印用法并以 2 退出）
  */
 export function parseArgs(argv: string[]): { options: CliOptions } | { error: string } {
-  const options: CliOptions = { port: DEFAULT_STANDALONE_PORT, check: false, help: false };
+  const options: CliOptions = {
+    port: DEFAULT_STANDALONE_PORT,
+    host: DEFAULT_STANDALONE_HOST,
+    token: null,
+    check: false,
+    help: false,
+  };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index] ?? '';
     if (arg === '--check') {
@@ -54,6 +70,19 @@ export function parseArgs(argv: string[]): { options: CliOptions } | { error: st
         return { error: `--port 需要 1..65535 的整数端口，收到 ${JSON.stringify(raw)}` };
       }
       options.port = value;
+    } else if (arg === '--host' || arg.startsWith('--host=')) {
+      const raw = arg === '--host' ? String(argv[index + 1] ?? '') : arg.slice('--host='.length);
+      if (arg === '--host') index += 1;
+      // 宽松校验：合法 IPv4/IPv6/主机名即可，不替用户猜默认值
+      if (!/^[A-Za-z0-9._:-]+$/.test(raw)) {
+        return { error: `--host 收到无法识别的地址 ${JSON.stringify(raw)}` };
+      }
+      options.host = raw;
+    } else if (arg === '--token' || arg.startsWith('--token=')) {
+      const raw = arg === '--token' ? String(argv[index + 1] ?? '') : arg.slice('--token='.length);
+      if (arg === '--token') index += 1;
+      if (raw.length === 0) return { error: '--token 需要非空令牌值' };
+      options.token = raw;
     } else {
       return { error: `未知参数：${arg}` };
     }

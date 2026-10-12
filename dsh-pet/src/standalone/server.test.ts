@@ -9,6 +9,7 @@ import { after, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
+import { fileURLToPath } from 'node:url';
 
 import type { RegisteredRoute, StandaloneLogger } from './context.ts';
 import { createRequestListener, listenStandaloneServer } from './server.ts';
@@ -26,8 +27,15 @@ class FakeRes {
 
   writeHead(status: number, headers?: Record<string, string>): this {
     this.status = status;
-    this.headers = headers ?? {};
+    // 与真实 ServerResponse 一致：writeHead 只覆盖同名头，先前 setHeader 设的（如 Cookie）保留
+    this.headers = { ...this.headers, ...(headers ?? {}) };
     this.headersSent = true;
+    return this;
+  }
+
+  /** 令牌路径会经 setHeader 下发 Cookie（writeHead 之外单独设头，与真实 ServerResponse 一致） */
+  setHeader(name: string, value: string): this {
+    this.headers[name.toLowerCase()] = value;
     return this;
   }
 
@@ -44,11 +52,26 @@ class FakeRes {
   }
 }
 
-/** 用假 req/res 驱动监听器（不必真的起 socket） */
-function call(listener: (req: IncomingMessage, res: ServerResponse) => void, url: string, method = 'GET'): FakeRes {
+/** 用假 req/res 驱动监听器（不必真的起 socket）；headers 供令牌用例传 Cookie */
+function call(
+  listener: (req: IncomingMessage, res: ServerResponse) => void,
+  url: string,
+  method = 'GET',
+  headers: Record<string, string> = {},
+): FakeRes {
   const res = new FakeRes();
-  // 只给监听器真正会读的两个字段（method/url）；其余成员本测试不触碰
-  listener({ method, url } as unknown as IncomingMessage, res as unknown as ServerResponse);
+  // 只给监听器真正会读的字段（method/url/headers）；其余成员本测试不触碰
+  listener({ method, url, headers } as unknown as IncomingMessage, res as unknown as ServerResponse);
+  return res;
+}
+
+/** 浏览器页形态的静态目录（真实包内路径：runtime/electron-helper） */
+const HELPER_WEB_ROOT = fileURLToPath(new URL('../../runtime/electron-helper/', import.meta.url));
+
+/** 静态页读取是异步的（readFile）：等响应落定再断言，避免抢跑 */
+async function settled(res: FakeRes, ms = 500): Promise<FakeRes> {
+  const start = Date.now();
+  while (res.status === 0 && Date.now() - start < ms) await new Promise((accept) => setTimeout(accept, 5));
   return res;
 }
 
@@ -230,5 +253,88 @@ describe('listenStandaloneServer —— 端口与关闭', () => {
     assert.equal(inside.status, 200);
     const outside = await fetch(`http://127.0.0.1:${server.port}/whatever`);
     assert.equal(outside.status, 404);
+  });
+});
+
+describe('浏览器页形态 —— /pet 托管（同一份 runtime/electron-helper）', () => {
+  test('/pet 无尾斜杠 → 302 到 /pet/（保留 query；否则页面里的 ./xxx.js 会解析到根目录）', () => {
+    const listener = createRequestListener({ routes: [], logger: silent, webRoot: HELPER_WEB_ROOT });
+    const res = call(listener, '/pet');
+    assert.equal(res.status, 302);
+    assert.equal(res.headers.location, '/pet/');
+    const withToken = call(listener, '/pet?token=abc');
+    assert.equal(withToken.status, 302);
+    assert.equal(withToken.headers.location, '/pet/?token=abc', '重定向后 ?token= 仍要有效');
+  });
+
+  test('/pet/ → index.html；/pet/<名字> → 脚本（内容类型按白名单）', async () => {
+    const listener = createRequestListener({ routes: [], logger: silent, webRoot: HELPER_WEB_ROOT });
+    const page = await settled(call(listener, '/pet/'));
+    assert.equal(page.status, 200);
+    assert.match(String(page.headers['content-type']), /text\/html/);
+    const script = await settled(call(listener, '/pet/sprite.js'));
+    assert.equal(script.status, 200);
+    assert.match(String(script.headers['content-type']), /javascript/);
+  });
+
+  test('白名单之外一律 404（目录穿越与任意文件都不放行）', () => {
+    const listener = createRequestListener({ routes: [], logger: silent, webRoot: HELPER_WEB_ROOT });
+    for (const path of [
+      '/pet/main.js',
+      '/pet/preload.js',
+      '/pet/%2e%2e%2fpackage.json',
+      '/pet/../package.json',
+      '/dsh-pet-7340/config',
+    ]) {
+      const res = call(listener, path);
+      assert.equal(res.status, 404, path);
+    }
+  });
+
+  test('未启用浏览器页（webRoot 缺省）时 /pet 不额外挂载 → 落回 404', () => {
+    const listener = createRequestListener({ routes: [], logger: silent });
+    assert.equal(call(listener, '/pet/').status, 404);
+  });
+});
+
+describe('访问令牌 —— 对外监听的兜底鉴权', () => {
+  const guarded = (token: string, calls?: { n: number }) =>
+    createRequestListener({
+      routes: [pluginLikeRoute(() => (calls ? (calls.n += 1) : undefined))],
+      logger: silent,
+      token,
+    });
+
+  test('既无 query 也无 Cookie → 401，且不进插件 handler', () => {
+    const calls = { n: 0 };
+    const res = call(guarded('sek', calls), '/dsh-pet-7340/config');
+    assert.equal(res.status, 401);
+    assert.equal(calls.n, 0, '未通过鉴权不得进业务路由');
+  });
+
+  test('?token= 命中 → 放行并下发 Cookie（页面内后续请求靠它通行）', () => {
+    const res = call(guarded('sek'), '/dsh-pet-7340/config?token=sek');
+    assert.equal(res.status, 200);
+    assert.match(String(res.headers['set-cookie']), /dsh_pet_token=sek/);
+  });
+
+  test('Cookie 命中 → 放行（静态资源与 API 请求都不带 query）', () => {
+    const res = call(guarded('sek'), '/dsh-pet-7340/config', 'GET', { cookie: 'a=1; dsh_pet_token=sek; b=2' });
+    assert.equal(res.status, 200);
+  });
+
+  test('令牌错误 → 401（query 与 Cookie 都错时不得放行）', () => {
+    assert.equal(call(guarded('sek'), '/dsh-pet-7340/config?token=bad').status, 401);
+    assert.equal(call(guarded('sek'), '/dsh-pet-7340/config', 'GET', { cookie: 'dsh_pet_token=bad' }).status, 401);
+  });
+
+  test('令牌同样罩住运维端点与 /shutdown（否则等于留了后门）', () => {
+    assert.equal(call(guarded('sek'), '/health').status, 401);
+    assert.equal(call(guarded('sek'), '/shutdown', 'POST').status, 401);
+  });
+
+  test('token=null（默认回环自用）不鉴权——既有行为零变化', () => {
+    const listener = createRequestListener({ routes: [pluginLikeRoute()], logger: silent });
+    assert.equal(call(listener, '/dsh-pet-7340/config').status, 200);
   });
 });

@@ -267,11 +267,53 @@ class PetSprite {
         fly ? toScreen(fly.vx) : 0,
         fly ? toScreen(fly.vy) : 0,
       );
+    } else {
+      // 浏览器页形态：没有窗口可移，直接摆元素本身——pos 即 sprite 左上角在页面里的坐标
+      // （桌面端 sprite 的屏幕位置同样是 pos：窗口原点 = pos − 余量，sprite 在窗口内偏移余量，
+      //   两者相抵。所以两侧的「窗口内坐标 → 局部坐标」换算口径完全一致，见 pointerLocal。）
+      this.el.style.left = this.pos.x + 'px';
+      this.el.style.top = this.pos.y + 'px';
     }
     // 位置变了（宠物漫游/拖拽/飞行，窗口跟着动）：提示若正显示必须重摆一次——它跟的是光标，
     // 而光标存的是视口坐标，窗口一移，光标相对窗口的位置就变了，不重摆提示会跟着窗口漂走。
     // 只在显示时重摆：漫游逐帧调本函数，没显示提示时不做无谓的 DOM 写入。
     if (this.tipOn) this.renderTip();
+  }
+
+  /**
+   * 事件坐标 → 「窗口内坐标」（口径与桌面端一致，其余几何代码零改动）。
+   *
+   * 桌面：事件来自 Electron 窗口内容，clientX/Y 本就是窗口内坐标；clientX 缺失时（个别
+   * 合成事件）退回屏幕坐标减窗口屏幕位置推算。窗口屏幕位置 = pos + VIEW 原点 − 余量。
+   * 浏览器页：整页就是「窗口」（无外扩余量），事件坐标是页面坐标 → 扣掉窗口原点即窗口内坐标
+   * （窗口原点 = pos − 余量，与桌面同一式子，所以下面两分支可以共用）。
+   */
+  pointerLocal(e) {
+    const bx = this.pos.x + VIEW.x - this.margin.l;
+    const by = this.pos.y + VIEW.y - this.margin.t;
+    if (IS_WINDOWED) {
+      return {
+        x: Number.isFinite(e.clientX) ? e.clientX : toLocal(e.screenX) - bx,
+        y: Number.isFinite(e.clientY) ? e.clientY : toLocal(e.screenY) - by,
+      };
+    }
+    return { x: toLocal(e.clientX) - bx, y: toLocal(e.clientY) - by };
+  }
+
+  /**
+   * 「窗口」矩形（视口坐标）——提示/菜单的允许显示范围按它算。
+   * 桌面 = sprite + 四周外扩余量（窗口随宠物移动）；浏览器页 = 整个页面视口（无窗口概念）。
+   */
+  winRect() {
+    if (IS_WINDOWED) {
+      return {
+        x: this.pos.x - this.margin.l,
+        y: this.pos.y - this.margin.t,
+        w: this.size + this.margin.l + this.margin.r,
+        h: this.winH + this.margin.t + this.margin.b,
+      };
+    }
+    return { x: 0, y: 0, w: VIEW.w, h: VIEW.h };
   }
 
   // 角落/边距 → 窗口位置；拖拽后按会话内位置（比例）还原——**松手无任何边界夹取**，
@@ -883,12 +925,13 @@ class PetSprite {
     // 来找上报调用，插到它前面会把上报挤出窗口（该断言守的是"松手必上报，否则窗口粘在可交互"）。
     if (e && Number.isFinite(e.clientX)) {
       const r = this.hitRect;
-      const px = e.clientX - this.margin.l;
-      const py = e.clientY - this.margin.t;
+      const w = this.pointerLocal(e);
+      const px = w.x - this.margin.l;
+      const py = w.y - this.margin.t;
       // 先按松手位置更新光标再摆位/显示，否则会重现拖拽前的位置（与浏览器 placeTip 同一处理）
       this.tipCursor = {
-        x: this.pos.x - this.margin.l + e.clientX,
-        y: this.pos.y - this.margin.t + e.clientY,
+        x: this.pos.x - this.margin.l + w.x,
+        y: this.pos.y - this.margin.t + w.y,
       };
       this.setTip(px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h);
     }
@@ -1009,10 +1052,14 @@ class PetSprite {
     if (this.tip.textContent !== this.pet.name) this.tip.textContent = this.pet.name;
     const cursor = this.tipCursor;
     if (cursor) {
-      const winX = this.pos.x - this.margin.l;
-      const winY = this.pos.y - this.margin.t;
-      const winW = this.size + this.margin.l + this.margin.r;
-      const winH = this.winH + this.margin.t + this.margin.b;
+      // 「窗口」矩形与光标**同坐标系**（都是视口坐标）：
+      //   桌面 = sprite + 外扩余量（窗口随宠物移动，光标存的是视口坐标）；
+      //   浏览器页 = 整个页面视口（原点 0,0），减 0 即原值。
+      const win = this.winRect();
+      const winX = win.x;
+      const winY = win.y;
+      const winW = win.w;
+      const winH = win.h;
       // 允许显示范围 = 窗口 ∩ 光标所在屏的工作区，两者必须取交集：
       // 只按窗口夹，窗口能贴到屏幕外，提示会被画到看不见的地方；只按工作区夹，提示会落到窗口外
       // （index.html 的 html,body 是 overflow:hidden，一样看不见）。
@@ -1053,17 +1100,15 @@ class PetSprite {
       return;
     }
     const r = this.hitRect;
-    // forwarded 事件坐标以窗口为原点（与页坐标一致）；转换到 sprite 坐标需扣减窗口余量；
-    // 异常时退回屏幕坐标 − 窗口屏幕位置推导（hitRect/pos 均为 CSS 系）：屏幕坐标 ÷scale 后
-    // 减去窗口屏幕原点（CSS 系）即窗口内坐标
-    const wx = Number.isFinite(e.clientX) ? e.clientX : toLocal(e.screenX) - (this.pos.x + VIEW.x - this.margin.l);
-    const wy = Number.isFinite(e.clientY) ? e.clientY : toLocal(e.screenY) - (this.pos.y + VIEW.y - this.margin.t);
-    const px = wx - this.margin.l;
-    const py = wy - this.margin.t;
+    // 事件坐标 → 窗口内坐标（桌面 = Electron 窗口；浏览器页 = 整页视口，见 pointerLocal）；
+    // 再扣掉窗口余量得到 sprite 局部坐标（hitRect 就在这个坐标系里）。
+    const w = this.pointerLocal(e);
+    const px = w.x - this.margin.l;
+    const py = w.y - this.margin.t;
     const inBody = px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
     // 光标位置存**视口坐标**（窗口原点 + 窗口内坐标）：窗口随宠物移动时贴光标不会漂，见 renderTip。
     // 必须在 setTip 之前更新：setTip 变显隐时会立刻渲染一次，晚一步就会用上一次的光标摆位。
-    if (inBody) this.tipCursor = { x: this.pos.x - this.margin.l + wx, y: this.pos.y - this.margin.t + wy };
+    if (inBody) this.tipCursor = { x: this.pos.x - this.margin.l + w.x, y: this.pos.y - this.margin.t + w.y };
     this.setInteractive(inBody);
     // 悬浮提示与可交互判定同源（同一个 inBody）：光标进身体 → 提示出现，离开 → 收起
     this.setTip(inBody);
@@ -1095,6 +1140,9 @@ class PetSprite {
   // 即可完整显示——**窗口和宠物零移动**，不存在跨进程位移竞态，也就不会瞬移闪帧。
   // 退化（可视区过小/窗口整体出屏，光标也点不到宠物）返回 null → 调用方按窗口视口兜底。
   visibleClampRect() {
+    // 浏览器页形态：菜单/弹窗就挂在整页上，没有「被 OS 裁掉的外扩余量」问题——
+    // 返回 null 让调用方走缺省（整个视口，见 menu.ts/chat.ts 的 clamp 缺省语义）。
+    if (!IS_WINDOWED) return null;
     // pos 是视口相对坐标，窗口屏幕位置 = pos + VIEW 原点 − 外扩余量（见 sendBounds）；
     // 比较双方都用屏幕坐标（坐标系不混），返回的夹取矩形仍是窗口局部坐标。
     // 夹取用**宠物所在的那块屏**而不是外接矩形：外接矩形含空洞，按它夹菜单会伸进

@@ -9,14 +9,49 @@ import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 
-import { configPathsFor, describePets, parseArgs } from './options.ts';
+import { configPathsFor, DEFAULT_STANDALONE_HOST, describePets, parseArgs } from './options.ts';
 import { DEFAULT_STANDALONE_PORT } from './server.ts';
 
 describe('parseArgs —— 独立模式的命令行契约', () => {
-  test('无参数：默认端口、不体检、不打印用法', () => {
+  test('无参数：默认端口、只听回环、不鉴权、不体检、不打印用法', () => {
     const parsed = parseArgs([]);
     assert.ok('options' in parsed);
-    assert.deepEqual(parsed.options, { port: DEFAULT_STANDALONE_PORT, check: false, help: false });
+    assert.deepEqual(parsed.options, {
+      port: DEFAULT_STANDALONE_PORT,
+      host: DEFAULT_STANDALONE_HOST,
+      token: null,
+      check: false,
+      help: false,
+    });
+  });
+
+  test('--host 的两种写法等价（浏览器页远程访问用 0.0.0.0）', () => {
+    const spaced = parseArgs(['--host', '0.0.0.0']);
+    const equals = parseArgs(['--host=0.0.0.0']);
+    assert.ok('options' in spaced && 'options' in equals);
+    assert.equal(spaced.options.host, '0.0.0.0');
+    assert.equal(equals.options.host, '0.0.0.0');
+  });
+
+  test('--host 非法字符 → error（不把奇怪的值交给 listen）', () => {
+    for (const argv of [['--host'], ['--host', '127.0.0.1; rm -rf /'], ['--host=has space']]) {
+      const parsed = parseArgs(argv);
+      assert.ok('error' in parsed, JSON.stringify(argv));
+      assert.match(parsed.error, /--host/);
+    }
+  });
+
+  test('--token 的两种写法等价；空值 → error', () => {
+    const spaced = parseArgs(['--token', 'abc123']);
+    const equals = parseArgs(['--token=abc123']);
+    assert.ok('options' in spaced && 'options' in equals);
+    assert.equal(spaced.options.token, 'abc123');
+    assert.equal(equals.options.token, 'abc123');
+    for (const argv of [['--token'], ['--token=']]) {
+      const parsed = parseArgs(argv);
+      assert.ok('error' in parsed, JSON.stringify(argv));
+      assert.match(parsed.error, /--token/);
+    }
   });
 
   test('--port 的两种写法等价', () => {
