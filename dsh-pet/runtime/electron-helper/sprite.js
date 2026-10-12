@@ -234,12 +234,6 @@ class PetSprite {
       { signal: ac.signal },
     );
 
-    // 拖文件互动：文件拖到宠物身上触发反应。浏览器形态直接收 HTML5 拖放事件；
-    // 壳形态因 setIgnoreMouseEvents(true) 可能收不到（待实测），不影响浏览器端使用。
-    this.hit.addEventListener('dragenter', (e) => { e.preventDefault(); this.onFileDragEnter(); }, { signal: ac.signal });
-    this.hit.addEventListener('dragover', (e) => e.preventDefault(), { signal: ac.signal });
-    this.hit.addEventListener('drop', (e) => this.onFileDrop(e), { signal: ac.signal });
-
     // 宠物间碰撞（跨窗 broker）：订阅其它宠物状态广播（碰撞检测用）+ 「被撞」事件 → onDeskHit。
     // 注意：退订由窗口销毁自然回收（webContents 销毁后 ipc 事件不再派发），无需显式取消。
     this.others = {}; // petId -> {x,y,vx,vy,size,bottomPad}（其它宠物的最新状态，来自主进程广播）
@@ -800,22 +794,6 @@ class PetSprite {
     if (this.animations.clicks.includes(anim)) this.playOnce(anim);
   }
 
-  // ---- 拖文件互动 ----
-  /** 文件拖入宠物身上：播好奇动画（dragenter 每次拖放只触发一次） */
-  onFileDragEnter() {
-    if (this.dragState.active) return;
-    if (this.animations.clicks.length) this.playOnce(S.pick(this.animations.clicks));
-  }
-
-  /** 文件放下：播开心动画 */
-  onFileDrop(e) {
-    e.preventDefault();
-    const files = e.dataTransfer?.files;
-    if (!files || !files.length) return;
-    this.playOnce('点击回应-开心跃动');
-    // 调试留痕（气泡通道走服务器轮询，本地消息后续可接）
-    console.log('[dsh-pet] 收到文件:', Array.from(files).map((f) => f.name).join('、'));
-  }
 
   /** 模式切换（右键菜单「模式」叶子）：切完立刻按新模式重掷动画链，并把选择写回配置。
    *  同模式点击 = 空操作（不发请求）。 */
