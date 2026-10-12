@@ -15,6 +15,8 @@ import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import {
+  menuItemsValid,
+  menuStyleValid,
   migrateUserConfig,
   readAllConfig,
   readUserConfig,
@@ -24,6 +26,7 @@ import {
   userConfigUnparsable,
   type ConfigPaths,
 } from './config.ts';
+import { DEFAULT_MENU_ITEMS, DEFAULT_MENU_STYLE } from '../shared/types.ts';
 
 /** 内置默认配置的完整最小形态（animations 整段必须合法——合并是整段替换/整段回退） */
 const BASE = {
@@ -37,6 +40,10 @@ const BASE = {
       workStatusEnabled: false,
       fixedEnabled: false,
       display: 'web',
+      // 菜单两字段与生产 assets/config.jsonc 同形（内置默认必须含它们：
+      // 无用户层时 mergePets 直接返回 basePets 原文，缺字段成品就不含）
+      menuItems: DEFAULT_MENU_ITEMS,
+      menuStyle: DEFAULT_MENU_STYLE,
       position: { corner: 'bottom-right', marginX: 40, marginY: 40 },
     },
   ],
@@ -995,5 +1002,81 @@ describe('sliceMemoryRounds —— chatMemoryRounds=0 必须真正不带历史�
 
   test('rounds=0 且消息列表原本为空 → 空', () => {
     assert.deepEqual(sliceMemoryRounds([], 0), []);
+  });
+});
+
+describe('右键菜单配置 —— menuItemsValid / menuStyleValid / saveUserConfig 白名单', () => {
+  const goodItems = () => JSON.parse(JSON.stringify(DEFAULT_MENU_ITEMS)) as unknown[];
+
+  test('menuItems：默认清单合法；逐项破坏都能拒（id 越界 / 重复 / 空文字 / 非布尔 / 空数组）', () => {
+    assert.equal(menuItemsValid(goodItems()), true);
+    assert.equal(menuItemsValid([]), false, '空数组 = 菜单全无，不合法');
+    const badId = goodItems() as Record<string, unknown>[];
+    badId[0].id = 'not-a-real-id';
+    assert.equal(menuItemsValid(badId), false, 'id 必须在固定集合内');
+    const dup = goodItems() as Record<string, unknown>[];
+    dup[1].id = dup[0].id;
+    assert.equal(menuItemsValid(dup), false, 'id 不得重复');
+    const emptyLabel = goodItems() as Record<string, unknown>[];
+    emptyLabel[2].label = '   ';
+    assert.equal(menuItemsValid(emptyLabel), false, 'label 不可空');
+    const longLabel = goodItems() as Record<string, unknown>[];
+    longLabel[2].label = 'x'.repeat(41);
+    assert.equal(menuItemsValid(longLabel), false, 'label ≤ 40 字');
+    const badVisible = goodItems() as Record<string, unknown>[];
+    badVisible[3].visible = 'yes';
+    assert.equal(menuItemsValid(badVisible), false, 'visible 必须是布尔');
+    assert.equal(menuItemsValid('nope'), false);
+  });
+
+  test('menuStyle：子字段可选（缺 = 合法，读取侧补默认）；存在的必须合法', () => {
+    assert.equal(menuStyleValid(undefined), true, '没传 = 合法（落盘缺键 → 读取侧默认）');
+    assert.equal(menuStyleValid({}), true, '空对象 = 全走默认');
+    assert.equal(menuStyleValid({ anim: 'fade', fontSize: 15 }), true, '只写两个子字段也合法');
+    assert.equal(menuStyleValid({ anim: 'wiggle' }), false, 'anim 只有 none/fade/scale');
+    assert.equal(menuStyleValid({ fontSize: 9 }), false);
+    assert.equal(menuStyleValid({ fontSize: 25 }), false);
+    assert.equal(menuStyleValid({ fontSize: 13.5 }), false, '字号必须整数');
+    assert.equal(menuStyleValid({ radius: -1 }), false);
+    assert.equal(menuStyleValid({ radius: 25 }), false);
+    assert.equal(menuStyleValid({ bg: 'white' }), false, '颜色只认 #rgb/#rrggbb');
+    assert.equal(menuStyleValid({ bg: '#abc' }), true);
+    assert.equal(menuStyleValid({ bg: '#aabbcc' }), true);
+    assert.equal(menuStyleValid({ fg: '#ggg' }), false);
+    assert.equal(menuStyleValid([1, 2]), false, '数组不算对象');
+  });
+
+  test('saveUserConfig：菜单字段传了必须合法（非法整份拒绝），没传不落键', () => {
+    const pet = (over: Record<string, unknown> = {}) => ({
+      id: 'main',
+      name: '主宠',
+      size: 462,
+      balanceEnabled: false,
+      display: 'web',
+      position: { corner: 'bottom-right', marginX: 40, marginY: 40 },
+      ...over,
+    });
+    // 合法整份 → 进白名单
+    const ok = saveUserConfig({
+      pets: [pet({ menuItems: goodItems(), menuStyle: { anim: 'scale', fontSize: 14, bg: '#fff' } })],
+    });
+    assert.ok(ok, '合法菜单配置必须通过');
+    const saved = (ok as { pets: Record<string, unknown>[] }).pets[0];
+    assert.deepEqual(saved.menuItems, goodItems());
+    assert.deepEqual(
+      saved.menuStyle,
+      { anim: 'scale', fontSize: 14, bg: '#fff' },
+      '原样存，缺的子字段不补（读取侧补）',
+    );
+    // 非法 menuItems → 整份拒绝（null）
+    const badItems = goodItems() as Record<string, unknown>[];
+    badItems[0].id = 'nope';
+    assert.equal(saveUserConfig({ pets: [pet({ menuItems: badItems })] }), null, '非法 id 必须拒绝');
+    // 非法 menuStyle → 整份拒绝
+    assert.equal(saveUserConfig({ pets: [pet({ menuStyle: { anim: 'boom' } })] }), null, '非法动画必须拒绝');
+    // 没传 → 落盘无键（读取侧回落默认）
+    const noMenu = saveUserConfig({ pets: [pet()] });
+    assert.ok(noMenu);
+    assert.equal((noMenu as { pets: Record<string, unknown>[] }).pets[0].menuItems, undefined);
   });
 });

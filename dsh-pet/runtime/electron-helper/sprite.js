@@ -1171,23 +1171,15 @@ class PetSprite {
     e.preventDefault();
     this.stopThrow(); // 菜单弹出前停住飞行中的宠物
     this.stopMove(); // 菜单悬停期间宠物不漫游
-    // 工具根项 + 共享菜单树（动作→分类→具体动画）：
-    //   桌面形态 = 打开网站（DSH 的 Web UI 入口）；
-    //   浏览器页形态没有 DSH，那一项没有意义——换成直达本包设置页（同源同令牌）。
-    // 碎碎念/对话项无条件显示：手动触发不受 whisperEnabled 限制（该字段只影响自动周期轮询）
-    const tools = IS_WINDOWED
-      ? [{ label: '打开网站', action: 'open-site' }]
-      : [{ label: '桌宠设置', action: 'settings' }];
-    if (this.pet.balanceEnabled) tools.push({ label: '查看余额', action: 'show-balance' });
-    tools.push(
-      { label: '碎碎念', action: 'whisper' },
-      { label: '对话', action: 'chat' },
-      { label: '回到初始位置', action: 'home' },
-      // 改配置文件后免去回设置页点保存：请宿主重启桌面 Helper（全部桌面宠物窗口按最新配置重建）。
-      // 放在最后：它是"重新加载"这类维护动作，与上面几个宠物互动项语义不同。
-      { label: '重载配置', action: 'reload' },
-    );
-    const tree = tools.concat(S.buildMenuTree(this.animations));
+    // 菜单 = 条目级 menuItems 配置驱动（顺序/文字/显隐在设置页「右键菜单」区编辑，保存即生效；
+    // 没配置 = 默认清单，与本行硬编码时代逐字一致）。site 项按形态给动作：桌面=打开网站、
+    // 浏览器=桌宠设置页；balance 项还要该宠物开了余额；animations 项 = 整棵动画树。
+    // 碎碎念/对话手动触发不受 whisperEnabled 限制（该字段只关自动周期轮询）。
+    const tree = S.buildToolItems(this.pet.menuItems, {
+      windowed: IS_WINDOWED,
+      balanceEnabled: this.pet.balanceEnabled === true,
+      animations: this.animations,
+    });
     if (!tree.length) return;
     this.menuOpen = true;
     this.setInteractive(true); // 菜单是窗口内 DOM：悬停期间整窗保持可交互，关闭后恢复命中区穿透
@@ -1199,6 +1191,8 @@ class PetSprite {
       y: e.clientY,
       // 只允许在「窗口 ∩ 工作区」内显示：宠物贴边时外扩余量伸出屏幕，菜单走进那里会被 OS 裁掉（#41）
       clamp: this.visibleClampRect(),
+      // 外观（条目级 menuStyle）：字号/圆角/配色经 CSS 变量注入、anim 驱动弹出动画；缺省=原样式
+      style: this.pet.menuStyle,
       onAction: (leaf) => this.onMenuAction(leaf),
       // 菜单被点外/Esc 关闭（非菜单项路径）：同样复位可交互标记，恢复命中区判定
       onClose: () => {

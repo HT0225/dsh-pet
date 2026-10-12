@@ -38,6 +38,19 @@ let loading = false;
 const $ = (selector) => document.querySelector(selector);
 
 /** 建元素：props.class/text/on*（事件），其余原样 setAttribute */
+// 菜单默认清单/默认外观 —— 与 src/shared/types.ts 的 DEFAULT_MENU_ITEMS / DEFAULT_MENU_STYLE
+// 逐字段一致（settings.html 不加载 shared-core，故内嵌一份；改动需两侧同步）。
+const DEFAULT_MENU_ITEMS = [
+  { id: 'site', label: '桌宠设置', visible: true },
+  { id: 'balance', label: '查看余额', visible: true },
+  { id: 'whisper', label: '碎碎念', visible: true },
+  { id: 'chat', label: '对话', visible: true },
+  { id: 'home', label: '回到初始位置', visible: true },
+  { id: 'reload', label: '重载配置', visible: true },
+  { id: 'animations', label: '动作', visible: true },
+];
+const DEFAULT_MENU_STYLE = { anim: 'none', fontSize: 13, radius: 8, bg: '#ffffff', fg: '#2b2b2b', hoverBg: '#2b63ff' };
+
 function el(tag, props = {}, ...children) {
   const node = document.createElement(tag);
   let pendingValue;
@@ -128,6 +141,13 @@ function deriveDraft() {
       workStatusEnabled: p.workStatusEnabled === true,
       fixedEnabled: p.fixedEnabled === true,
       display: ['web', 'desktop', 'both', 'none'].includes(p.display) ? p.display : 'both',
+      // 右键菜单：按默认清单为骨架、用成品值补齐（成品由宿主合并保证字段在且合法）；
+      // 菜单顺序 = 数组顺序，label/visible 直接来自成品
+      menuItems: DEFAULT_MENU_ITEMS.map((d) => {
+        const m = Array.isArray(p.menuItems) ? p.menuItems.find((x) => x && x.id === d.id) : null;
+        return m ? { id: d.id, label: String(m.label || d.label), visible: m.visible !== false } : { ...d };
+      }),
+      menuStyle: { ...DEFAULT_MENU_STYLE, ...(p.menuStyle && typeof p.menuStyle === 'object' ? p.menuStyle : {}) },
       position: {
         corner: ['top-left', 'top-right', 'bottom-left', 'bottom-right'].includes(p.position && p.position.corner)
           ? p.position.corner
@@ -284,6 +304,144 @@ function cornerField(position) {
 
 // ---------- 渲染 ----------
 
+/** color input 只认 #rrggbb：#rgb 归一化、其它一律回落默认白（读入值来自合法配置，正常都能识别） */
+function normalizeHex(c) {
+  const s = String(c || '');
+  if (/^#[0-9a-fA-F]{6}$/.test(s)) return s;
+  if (/^#[0-9a-fA-F]{3}$/.test(s))
+    return (
+      '#' +
+      s
+        .slice(1)
+        .split('')
+        .map((ch) => ch + ch)
+        .join('')
+    );
+  return '#ffffff';
+}
+
+function colorField(label, value, onInput) {
+  const input = el('input', {
+    type: 'color',
+    value: normalizeHex(value),
+    oninput: (e) => onInput(e.target.value),
+  });
+  return el('label', { class: 'field' }, el('span', { class: 'lbl', text: label }), input);
+}
+
+/** 一只宠物的「右键菜单」编辑块：菜单项列表（顺序/文字/显示）+ 菜单外观（动画/字号/圆角/三色） */
+function renderMenuEditor(pet) {
+  const wrap = el('div', { class: 'menu-editor' });
+  wrap.append(
+    el('div', { class: 'menu-sec', text: '右键菜单（↑↓ 调顺序，即菜单从上到下的顺序；取消「显示」= 该项不出现）' }),
+  );
+  const rows = el('div', { class: 'menu-rows' });
+  const move = (i, dir) => {
+    const j = i + dir;
+    if (j < 0 || j >= pet.menuItems.length) return;
+    const t = pet.menuItems[i];
+    pet.menuItems[i] = pet.menuItems[j];
+    pet.menuItems[j] = t;
+    renderPets();
+    markDirty();
+  };
+  pet.menuItems.forEach((item, i) => {
+    const row = el('div', { class: 'menu-row' });
+    row.append(
+      el('button', {
+        class: 'btn small',
+        text: '\u2191',
+        title: '上移',
+        disabled: i === 0 ? '' : undefined,
+        onclick: () => move(i, -1),
+      }),
+      el('button', {
+        class: 'btn small',
+        text: '\u2193',
+        title: '下移',
+        disabled: i === pet.menuItems.length - 1 ? '' : undefined,
+        onclick: () => move(i, 1),
+      }),
+      el('code', { class: 'mid', text: item.id }),
+      el('input', {
+        type: 'text',
+        value: item.label,
+        maxlength: '40',
+        title: '菜单文字（最多 40 字）',
+        oninput: (e) => {
+          item.label = e.target.value;
+          markDirty();
+        },
+      }),
+      el(
+        'label',
+        { class: 'chk' },
+        el('input', {
+          type: 'checkbox',
+          checked: item.visible ? 'checked' : undefined,
+          onchange: (e) => {
+            item.visible = e.target.checked;
+            markDirty();
+          },
+        }),
+        el('span', { text: '显示' }),
+      ),
+    );
+    rows.append(row);
+  });
+  wrap.append(rows);
+
+  const st = pet.menuStyle;
+  const styleGrid = el('div', { class: 'grid menu-style' });
+  styleGrid.append(
+    selectField(
+      '弹出动画',
+      st.anim,
+      [
+        { value: 'none', label: '无（默认）' },
+        { value: 'fade', label: '淡入' },
+        { value: 'scale', label: '缩放淡入' },
+      ],
+      (v) => {
+        st.anim = v;
+        markDirty();
+      },
+    ),
+    numberField(
+      '字号 px（10~24）',
+      st.fontSize,
+      (v) => {
+        st.fontSize = v;
+        markDirty();
+      },
+      { min: 10, max: 24 },
+    ),
+    numberField(
+      '圆角 px（0~24）',
+      st.radius,
+      (v) => {
+        st.radius = v;
+        markDirty();
+      },
+      { min: 0, max: 24 },
+    ),
+    colorField('面板背景色', st.bg, (v) => {
+      st.bg = v;
+      markDirty();
+    }),
+    colorField('文字颜色', st.fg, (v) => {
+      st.fg = v;
+      markDirty();
+    }),
+    colorField('悬停底色', st.hoverBg, (v) => {
+      st.hoverBg = v;
+      markDirty();
+    }),
+  );
+  wrap.append(el('div', { class: 'menu-sec', text: '菜单外观（弹出动画 / 字号 / 圆角 / 配色）' }), styleGrid);
+  return wrap;
+}
+
 function renderPets() {
   const list = $('#pet-list');
   list.textContent = '';
@@ -358,6 +516,7 @@ function renderPets() {
       }),
     );
     card.append(toggles);
+    card.append(renderMenuEditor(pet));
     list.append(card);
   });
 
@@ -482,6 +641,24 @@ function validateDraft() {
     }
     if (!CORNERS.some((c) => c.value === pet.position.corner)) errors.push(`${where}：角落取值非法`);
     if (!DISPLAYS.some((d) => d.value === pet.display)) errors.push(`${where}：显示位置取值非法`);
+    // 右键菜单（与后端 menuItemsValid/menuStyleValid 同口径）
+    const items = Array.isArray(pet.menuItems) ? pet.menuItems : [];
+    if (!items.length) errors.push(`${where}：右键菜单至少保留一项`);
+    items.forEach((m) => {
+      const ml = String(m.label || '').trim();
+      if (!ml) errors.push(`${where}：菜单项「${m.id}」文字不能为空`);
+      else if (ml.length > 40) errors.push(`${where}：菜单项「${m.id}」文字超过 40 字`);
+    });
+    const st = pet.menuStyle;
+    if (!['none', 'fade', 'scale'].includes(st.anim)) errors.push(`${where}：菜单动画取值非法`);
+    if (!Number.isInteger(Number(st.fontSize)) || Number(st.fontSize) < 10 || Number(st.fontSize) > 24)
+      errors.push(`${where}：菜单字号需为 10~24 的整数`);
+    if (!Number.isInteger(Number(st.radius)) || Number(st.radius) < 0 || Number(st.radius) > 24)
+      errors.push(`${where}：菜单圆角需为 0~24 的整数`);
+    for (const c of [st.bg, st.fg, st.hoverBg]) {
+      if (!/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(String(c)))
+        errors.push(`${where}：菜单颜色需为 #rgb 或 #rrggbb`);
+    }
   });
   const p = draft.physics;
   for (const [key, [lo, hi]] of Object.entries(PHYSICS_RANGE)) {
@@ -511,6 +688,16 @@ function saveBody() {
       workStatusEnabled: !!pet.workStatusEnabled,
       fixedEnabled: !!pet.fixedEnabled,
       display: pet.display,
+      // 右键菜单：整份随请求（后端 menuItemsValid/menuStyleValid 权威校验，非法整份拒绝）
+      menuItems: pet.menuItems.map((m) => ({ id: m.id, label: String(m.label).trim(), visible: m.visible === true })),
+      menuStyle: {
+        anim: ['none', 'fade', 'scale'].includes(pet.menuStyle.anim) ? pet.menuStyle.anim : 'none',
+        fontSize: Number(pet.menuStyle.fontSize),
+        radius: Number(pet.menuStyle.radius),
+        bg: pet.menuStyle.bg,
+        fg: pet.menuStyle.fg,
+        hoverBg: pet.menuStyle.hoverBg,
+      },
       position: {
         corner: pet.position.corner,
         marginX: Number(pet.position.marginX),
@@ -546,6 +733,8 @@ function addPet() {
           workStatusEnabled: true,
           fixedEnabled: false,
           display: 'both',
+          menuItems: JSON.parse(JSON.stringify(DEFAULT_MENU_ITEMS)),
+          menuStyle: { ...DEFAULT_MENU_STYLE },
           position: { corner: 'bottom-right', marginX: 24, marginY: 24 },
         },
   );

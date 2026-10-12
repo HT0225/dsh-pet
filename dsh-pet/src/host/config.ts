@@ -35,6 +35,8 @@
  * 浏览器/桌面侧的对应纯逻辑（把成品拍平成渲染列表）在 src/shared/config.ts。
  */
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
+
+import { DEFAULT_MENU_ITEMS, DEFAULT_MENU_STYLE, MENU_ITEM_IDS } from '../shared/types';
 import { dirname, join } from 'node:path';
 
 /** 位置角落白名单 */
@@ -474,6 +476,65 @@ function petEnum(
   return typeof def === 'string' ? def : '';
 }
 
+/** menuItems 合法性（整份语义）：非空数组、id ∈ 固定集且不重复、label 1~40 字、visible 布尔 */
+export function menuItemsValid(v: unknown): boolean {
+  if (!Array.isArray(v) || v.length === 0 || v.length > MENU_ITEM_IDS.length) return false;
+  const seen = new Set<string>();
+  for (const item of v) {
+    if (!item || typeof item !== 'object') return false;
+    const { id, label, visible } = item as Record<string, unknown>;
+    if (typeof id !== 'string' || !(MENU_ITEM_IDS as readonly string[]).includes(id)) return false;
+    if (seen.has(id)) return false;
+    seen.add(id);
+    if (typeof label !== 'string' || !label.trim() || label.length > 40) return false;
+    if (typeof visible !== 'boolean') return false;
+  }
+  return true;
+}
+
+/** #rgb / #rrggbb（menuStyle 三色的唯一合法形态） */
+const HEX_COLOR = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+
+/** menuStyle 合法性：子字段**可选**（缺的由读取侧补默认），存在的必须合法 */
+export function menuStyleValid(v: unknown): boolean {
+  if (v === undefined) return true;
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
+  const s = v as Record<string, unknown>;
+  if (s.anim !== undefined && s.anim !== 'none' && s.anim !== 'fade' && s.anim !== 'scale') return false;
+  const fs = Number(s.fontSize);
+  if (s.fontSize !== undefined && (!Number.isInteger(fs) || fs < 10 || fs > 24)) return false;
+  const rad = Number(s.radius);
+  if (s.radius !== undefined && (!Number.isInteger(rad) || rad < 0 || rad > 24)) return false;
+  for (const key of ['bg', 'fg', 'hoverBg'] as const) {
+    const c = s[key];
+    if (c !== undefined && (typeof c !== 'string' || !HEX_COLOR.test(c))) return false;
+  }
+  return true;
+}
+
+/** 菜单项：缺失 → 默认（= 上线前的硬编码菜单）；显式但非法 → 告警 + 默认 */
+function petMenuItems(own: unknown, def: unknown, label: string, id: string): Record<string, unknown>[] {
+  if (Array.isArray(own) && menuItemsValid(own)) return own as Record<string, unknown>[];
+  if (own !== undefined && own !== null) {
+    warnOnce(`${label}:menuItems:${id}`, `宠物「${id}」的 menuItems 非法，已取默认值`);
+  }
+  return (Array.isArray(def) && menuItemsValid(def) ? def : DEFAULT_MENU_ITEMS) as Record<string, unknown>[];
+}
+
+/** 菜单外观：缺失 → 默认；显式但非法 → 告警 + 默认；合法 → 与默认逐字段合并（缺子字段补默认） */
+function petMenuStyle(own: unknown, def: unknown, label: string, id: string): Record<string, unknown> {
+  if (menuStyleValid(own) && own !== undefined && own !== null) {
+    return { ...DEFAULT_MENU_STYLE, ...(own as Record<string, unknown>) };
+  }
+  if (own !== undefined && own !== null) {
+    warnOnce(`${label}:menuStyle:${id}`, `宠物「${id}」的 menuStyle 非法，已取默认值`);
+  }
+  if (menuStyleValid(def) && def !== undefined && def !== null) {
+    return { ...DEFAULT_MENU_STYLE, ...(def as Record<string, unknown>) };
+  }
+  return { ...DEFAULT_MENU_STYLE };
+}
+
 /** 一只实例 → 完成品实例（id 必须自己的且全局唯一；其余字段没写/非法 → 默认 + 告警） */
 function mergePet(
   base: Record<string, unknown>,
@@ -506,6 +567,8 @@ function mergePet(
     workStatusEnabled: petBool(p.workStatusEnabled, base.workStatusEnabled, label, 'workStatusEnabled', id),
     fixedEnabled: petBool(p.fixedEnabled, base.fixedEnabled, label, 'fixedEnabled', id),
     display: petEnum(p.display, PET_DISPLAY_SET, base.display, label, 'display', id),
+    menuItems: petMenuItems(p.menuItems, base.menuItems, label, id),
+    menuStyle: petMenuStyle(p.menuStyle, base.menuStyle, label, id),
     position: {
       corner: petEnum(ownPos.corner, CORNER_SET, basePos.corner, label, 'position.corner', id),
       marginX: petNumber(ownPos.marginX, basePos.marginX, -Infinity, label, 'position.marginX', id),
@@ -615,6 +678,12 @@ export function saveUserConfig(
     if (fixedEnabled !== undefined && typeof fixedEnabled !== 'boolean') return null;
     const display = String(pp.display ?? '');
     if (!PET_DISPLAY_SET.has(display)) return null;
+    // 菜单项 / 菜单外观（条目级，设置页「右键菜单」区编辑）：传了必须整段合法（后端权威闸，
+    // 前端已按同一套规则先拦），没传则落盘缺键 → 读取侧合并取默认（与四开关同语义）。
+    const menuItems = pp.menuItems;
+    if (menuItems !== undefined && !menuItemsValid(menuItems)) return null;
+    const menuStyle = pp.menuStyle;
+    if (menuStyle !== undefined && !menuStyleValid(menuStyle)) return null;
     const pos = pp.position && typeof pp.position === 'object' ? (pp.position as Record<string, unknown>) : {};
     const corner = String(pos.corner ?? '');
     if (!CORNER_SET.has(corner)) return null;
@@ -630,6 +699,8 @@ export function saveUserConfig(
       workStatusEnabled,
       fixedEnabled,
       display,
+      menuItems,
+      menuStyle,
       position: { corner, marginX, marginY },
     });
   }

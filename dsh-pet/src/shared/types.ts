@@ -106,6 +106,10 @@ export interface Pet {
    *  （余额/碎碎念/工作状态）、点击回应与拖拽一律照常——用户主动触发的不受此限制。
    *  缺失默认 false（保持原行为：会自己走、会自己翻） */
   fixedEnabled: boolean;
+  /** 右键菜单项（条目级，host 合并已填默认）：顺序/文字/显隐见 MenuItemConfig */
+  menuItems: MenuItemConfig[];
+  /** 菜单外观（条目级，host 合并已填默认）：动画/字号/圆角/配色见 MenuStyleConfig */
+  menuStyle: MenuStyleConfig;
   /** 显示位置（web/desktop/both/none，必填）：缺失即配置错误，代码不做兜底 */
   display: PetDisplay;
   position: { corner: Corner; marginX: number; marginY: number };
@@ -139,6 +143,57 @@ export interface ModelSelection {
   /** 该服务商下的模型 id */
   model: string;
 }
+
+/** 菜单项（条目级）：右键菜单的工具项与「动作」分支 —— 数组顺序 = 菜单渲染顺序 */
+export interface MenuItemConfig {
+  /** 固定 id（不可改）：site=设置/打开网站 · balance=余额 · whisper=碎碎念 · chat=对话 ·
+   *  home=回初始位置 · reload=重载配置 · animations=动作（动画树分支，label 即分支标题） */
+  id: string;
+  /** 显示文字（自定义，1~40 字符） */
+  label: string;
+  /** 是否在菜单里显示 */
+  visible: boolean;
+}
+
+/** 菜单外观（条目级）：弹出动画 / 字号 / 圆角 / 三色（经 CSS 变量注入菜单组件） */
+export interface MenuStyleConfig {
+  /** 弹出动画：none=无（默认，保持原行为）/ fade=淡入 / scale=缩放淡入 */
+  anim: 'none' | 'fade' | 'scale';
+  /** 字号 px（10~24） */
+  fontSize: number;
+  /** 面板圆角 px（0~24） */
+  radius: number;
+  /** 面板背景色（#rgb / #rrggbb） */
+  bg: string;
+  /** 文字色（#rgb / #rrggbb） */
+  fg: string;
+  /** 悬停底色（#rgb / #rrggbb，渲染时按 16% 浓度混透明，保持原半透明质感） */
+  hoverBg: string;
+}
+
+/** 菜单项固定 id 集合（校验与组装共用，顺序 = 未配置时的默认菜单顺序） */
+export const MENU_ITEM_IDS = ['site', 'balance', 'whisper', 'chat', 'home', 'reload', 'animations'] as const;
+
+/** 未配置时的默认菜单项（= 上线前的硬编码菜单，行为零变化） */
+export const DEFAULT_MENU_ITEMS: MenuItemConfig[] = [
+  { id: 'site', label: '桌宠设置', visible: true },
+  { id: 'balance', label: '查看余额', visible: true },
+  { id: 'whisper', label: '碎碎念', visible: true },
+  { id: 'chat', label: '对话', visible: true },
+  { id: 'home', label: '回到初始位置', visible: true },
+  { id: 'reload', label: '重载配置', visible: true },
+  { id: 'animations', label: '动作', visible: true },
+];
+
+/** 未配置时的默认菜单外观（逐字段对应 MENU_CSS 的既有硬编码值） */
+export const DEFAULT_MENU_STYLE: MenuStyleConfig = {
+  anim: 'none',
+  fontSize: 13,
+  radius: 8,
+  bg: '#ffffff',
+  fg: '#2b2b2b',
+  hoverBg: '#2b63ff',
+};
 
 /** config.jsonc 的 physics 段：拖拽抛掷手感参数（全局，所有宠物共用）。
  *  默认值 = src/shared/physics.ts 的常量（1400 / 0.78 / 2.5 / true / 1.0 / false），内置配置与代码两侧保持一致。 */

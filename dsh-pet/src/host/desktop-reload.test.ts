@@ -45,7 +45,10 @@ describe('桌面端「重载配置」—— 菜单 → 宿主重启 Helper', () 
   });
 
   test('桌面端：菜单项存在、动作有分支，且请求的路由名与宿主一致', () => {
-    assert.ok(/label: '重载配置', action: 'reload'/.test(sprite), '桌面端右键菜单必须有「重载配置」项');
+    // 菜单已改为 menuItems 配置驱动（设置页可编辑顺序/文字/显隐）：sprite 按配置组装，
+    // reload 的**默认清单项**与 buildToolItems 的分发都在 shared 侧
+    assert.ok(/buildToolItems\(this\.pet\.menuItems/.test(sprite), '桌面端右键菜单必须按 menuItems 配置组装');
+    assert.ok(/case 'reload'/.test(menu), '默认菜单清单/组装必须包含 reload 项（buildToolItems 的分发）');
     assert.ok(/leaf\.action === 'reload'/.test(sprite), 'onMenuAction 必须有 reload 分支（否则点了没反应）');
     const m = /fetch\(BASE \+ '\/([a-z-]+)', \{ method: 'POST' \}\)/.exec(sprite);
     assert.ok(m, "reloadDesktop() 必须 POST 到 BASE + '/<路由名>'（bridge 已支持 POST，无需新增 IPC）");

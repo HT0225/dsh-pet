@@ -1237,6 +1237,9 @@ export function makePetConfigSection(rt: {
           workStatusEnabled: tpl.workStatusEnabled,
           fixedEnabled: tpl.fixedEnabled,
           display: tpl.display,
+          // 菜单两字段从模板深一层拷贝（数组/对象不能共享引用——React state 里是独立实例）
+          menuItems: tpl.menuItems.map((m) => ({ ...m })),
+          menuStyle: { ...tpl.menuStyle },
           position: { ...tpl.position },
         },
       ]);

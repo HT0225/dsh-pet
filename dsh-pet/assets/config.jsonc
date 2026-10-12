@@ -166,6 +166,29 @@
       // 设置页有同名勾选框。改动后刷新或重启生效。
       "fixedEnabled": false,
       "display": "both",
+      // 右键菜单项（数组顺序 = 菜单从上到下的顺序；visible=false 隐藏；label 自由改文字）。
+      // id 固定：site=桌宠设置/打开网站 · balance=查看余额 · whisper=碎碎念 · chat=对话 ·
+      // home=回到初始位置 · reload=重载配置 · animations=动作（整棵动画树，label 即分支标题）。
+      // 不写这段 = 用默认菜单（与下一致）；设置页「右键菜单」区可图形化编辑。
+      "menuItems": [
+        { "id": "site", "label": "桌宠设置", "visible": true },
+        { "id": "balance", "label": "查看余额", "visible": true },
+        { "id": "whisper", "label": "碎碎念", "visible": true },
+        { "id": "chat", "label": "对话", "visible": true },
+        { "id": "home", "label": "回到初始位置", "visible": true },
+        { "id": "reload", "label": "重载配置", "visible": true },
+        { "id": "animations", "label": "动作", "visible": true }
+      ],
+      // 菜单外观：anim=弹出动画（none/fade/scale）、fontSize=字号 10~24、radius=圆角 0~24、
+      // bg/fg/hoverBg=背景/文字/悬停底色（#rgb 或 #rrggbb）。不写 = 默认（原样式）。
+      "menuStyle": {
+        "anim": "none",
+        "fontSize": 13,
+        "radius": 8,
+        "bg": "#ffffff",
+        "fg": "#2b2b2b",
+        "hoverBg": "#2b63ff"
+      },
       "position": {
         "corner": "top-right",
         "marginX": 24,

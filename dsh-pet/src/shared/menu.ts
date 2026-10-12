@@ -22,18 +22,20 @@
 //   - 点击项 / 点击菜单外 / Esc 关闭。
 //   不再使用"逐项 mouseleave 延迟关闭定时器"——旧实现里鼠标从分类项移向三级面板时，
 //   会同时给父项（动作）排下无人取消的关闭定时器，导致二级+三级一起消失。
-import type { Animations, Category } from './types';
+import { DEFAULT_MENU_ITEMS, DEFAULT_MENU_STYLE } from './types';
+import type { Animations, Category, MenuItemConfig, MenuStyleConfig } from './types';
 
 /** 叶子：可点击的菜单项 */
 export interface MenuLeaf {
   label: string;
   /** 播放的动画名（点播动作）；action 优先于 anim */
   anim?: string;
-  /** 自定义动作：open-site=打开网站 / show-balance=查看余额；whisper=立即碎碎念一句；
-   * chat=打开对话弹窗；home=回到初始位置；reload=重载配置（桌面端专属：重启桌面 Helper，
-   * 全部桌面宠物窗口按最新配置重建——浏览器端刷新页面即可，不注入此项）。
+  /** 自定义动作：open-site=打开网站（桌面形态）/ settings=桌宠设置页（浏览器形态）/
+   * show-balance=查看余额；whisper=立即碎碎念一句；chat=打开对话弹窗；home=回到初始位置；
+   * reload=重载配置（桌面端专属：重启桌面 Helper，全部桌面宠物窗口按最新配置重建——
+   * 浏览器端刷新页面即可，不注入此项）。
    * 手动触发均不受 whisperEnabled 影响（该字段只关自动周期轮询） */
-  action?: 'open-site' | 'show-balance' | 'whisper' | 'chat' | 'home' | 'reload';
+  action?: 'open-site' | 'settings' | 'show-balance' | 'whisper' | 'chat' | 'home' | 'reload';
 }
 
 /** 分支：带子菜单的项 */
@@ -96,15 +98,64 @@ export function isNoMirrorAnimation(categories: Category[], anim: string): boole
   return (categories ?? []).some((c) => c.noMirror === true && c.actions.includes(anim));
 }
 
+/**
+ * 按条目级 menuItems 配置组装工具项 + 动作分支（纯函数，可单测）：
+ * 数组顺序 = 菜单顺序，visible=false 跳过，label 用配置文字；未知 id 跳过（配置漂移防御）。
+ * site 项按形态给动作：桌面 = open-site（打开网站）/ 浏览器 = settings（桌宠设置页）；
+ * balance 项还要 pet 的 balanceEnabled 为真（该宠物没开余额就不给入口）；
+ * animations 项 = buildMenuTree 的整棵动画树，label 覆盖其根标题（「动作」→ 自定义）。
+ */
+export function buildToolItems(
+  items: MenuItemConfig[] | undefined,
+  opts: { windowed: boolean; balanceEnabled: boolean; animations: Animations },
+): MenuNode[] {
+  const out: MenuNode[] = [];
+  // 缺省/空数组 → 默认菜单（= 上线前的硬编码清单），配置缺失绝不等于「菜单消失」
+  const list = Array.isArray(items) && items.length ? items : DEFAULT_MENU_ITEMS;
+  for (const it of list) {
+    if (!it || typeof it !== 'object' || it.visible !== true) continue;
+    const label = typeof it.label === 'string' && it.label ? it.label : it.id;
+    switch (it.id) {
+      case 'site':
+        out.push({ label, action: opts.windowed ? 'open-site' : 'settings' });
+        break;
+      case 'balance':
+        if (opts.balanceEnabled) out.push({ label, action: 'show-balance' });
+        break;
+      case 'whisper':
+      case 'chat':
+      case 'home':
+      case 'reload':
+        out.push({ label, action: it.id });
+        break;
+      case 'animations': {
+        const tree = buildMenuTree(opts.animations);
+        if (tree.length) {
+          tree[0].label = label;
+          out.push(tree[0]);
+        }
+        break;
+      }
+      default:
+        break; // 未知 id：忽略（旧配置含新字段/手改漂移时不让菜单崩）
+    }
+  }
+  return out;
+}
+
 /** 菜单样式 —— 两端注入同一份（浏览器并入 plugin css；桌面入窗口 head）。
  *  每一级面板是独立的绝对定位盒子（.dsh-pet-menu-column），位置由 JS 内联写入；
  *  面板与面板之间互不嵌套，各自独立滚动。 */
 export const MENU_CSS = [
-  '.dsh-pet-menu{position:fixed;left:0;top:0;z-index:2147483000;color:#2b2b2b;font-size:13px;line-height:1.5;',
+  // 可配置项全走 CSS 变量（--dsh-menu-*，mountContextMenu 按 MenuStyleConfig 写到根容器），
+  // 变量缺失时回落的字面量 = 上线前的硬编码值，未配置外观时像素级不变。
+  '.dsh-pet-menu{position:fixed;left:0;top:0;z-index:2147483000;color:var(--dsh-menu-fg,#2b2b2b);',
+  'font-size:var(--dsh-menu-fs,13px);line-height:1.5;',
   "font-family:'Microsoft YaHei UI','Segoe UI','PingFang SC',sans-serif;user-select:none;pointer-events:auto}",
   '.dsh-pet-menu,.dsh-pet-menu *{box-sizing:border-box}',
   '.dsh-pet-menu-column{position:absolute;min-width:150px;max-width:240px;padding:4px;',
-  'background:rgba(255,255,255,.98);border:1px solid rgba(0,0,0,.12);border-radius:8px;',
+  'background:var(--dsh-menu-bg,rgba(255,255,255,.98));border:1px solid rgba(0,0,0,.12);',
+  'border-radius:var(--dsh-menu-radius,8px);',
   'box-shadow:0 8px 28px rgba(0,0,0,.2);max-height:min(62vh,460px);overflow-y:auto;',
   // 自定义滚动条：细圆角半透明条（Chromium 系 Chrome/Edge/Electron 走 ::-webkit-scrollbar；
   // Firefox 走 scrollbar-width/scrollbar-color）。thumb 用 border+background-clip 内缩 2px 留白，
@@ -119,7 +170,16 @@ export const MENU_CSS = [
   '.dsh-pet-menu-column::-webkit-scrollbar-corner{background:transparent}',
   '.dsh-pet-menu-item{position:relative;display:flex;align-items:center;justify-content:space-between;',
   'gap:14px;padding:5px 12px;border-radius:6px;white-space:nowrap;cursor:default}',
+  // 悬停底色：第一行 = 不支持 color-mix 的老引擎兜底（固定蓝 14%，即原样式）；
+  // 第二行按用户配置的 hoverBg 混 16% 浓度（原透明质感），支持则覆盖第一行
   '.dsh-pet-menu-item:hover{background:rgba(43,99,255,.14)}',
+  '.dsh-pet-menu-item:hover{background:color-mix(in srgb,var(--dsh-menu-hover,#2b63ff) 16%,transparent)}',
+  // 弹出动画（mountContextMenu 按 MenuStyleConfig.anim 打 data-anim）：
+  // none=无动画（默认，保持原行为）/ fade=淡入 / scale=缩放淡入；每级面板各自播一遍
+  '@keyframes dsh-menu-fade{from{opacity:0}to{opacity:1}}',
+  '@keyframes dsh-menu-pop{from{opacity:0;transform:scale(.96)}to{opacity:1;transform:scale(1)}}',
+  '.dsh-pet-menu[data-anim=fade] .dsh-pet-menu-column{animation:dsh-menu-fade .12s ease-out}',
+  '.dsh-pet-menu[data-anim=scale] .dsh-pet-menu-column{animation:dsh-menu-pop .12s ease-out}',
   '.dsh-pet-menu-item>span:first-child{min-width:0;overflow:hidden;text-overflow:ellipsis}',
   '.dsh-pet-menu-arrow{color:#9aa0a6;font-size:12px;flex:none}',
 ].join('');
@@ -158,8 +218,10 @@ export function mountContextMenu(opts: {
   onClose?: () => void;
   /** 菜单允许占用的矩形（视口局部坐标）；缺省 = 整个视口（浏览器既有行为） */
   clamp?: { x: number; y: number; w: number; h: number };
+  /** 外观（条目级 menuStyle）：缺省 = MENU_CSS 的字面量默认（原样视觉） */
+  style?: MenuStyleConfig;
 }): ContextMenuMount {
-  const { tree, x, y, onAction, onClose, clamp } = opts;
+  const { tree, x, y, onAction, onClose, clamp, style } = opts;
   // 夹取基准：缺省整个视口；桌面传入「窗口 ∩ 工作区」后各级面板都只在这个矩形内落位/翻转。
   // 防御：clamp 含非有限值（如坐标来源缺失变成 NaN）时回落整个视口——否则面板会落到 (0,0)
   const c =
@@ -171,6 +233,18 @@ export function mountContextMenu(opts: {
   root.style.left = '0px';
   root.style.top = '0px';
   root.addEventListener('contextmenu', (e) => e.preventDefault());
+  // 外观注入：CSS 变量写到根容器（MENU_CSS 各规则用 var(…, 原字面量) 回落）；
+  // data-anim 驱动弹出动画三态（none 不写属性 = 无动画，与未配置一致）。
+  // 数值/颜色来自 saveUserConfig 校验过的配置；这里仍做一次类型守卫（缺字段回落默认）。
+  if (style) {
+    const s = { ...DEFAULT_MENU_STYLE, ...style };
+    if (Number.isFinite(s.fontSize)) root.style.setProperty('--dsh-menu-fs', s.fontSize + 'px');
+    if (Number.isFinite(s.radius)) root.style.setProperty('--dsh-menu-radius', s.radius + 'px');
+    if (typeof s.bg === 'string' && s.bg) root.style.setProperty('--dsh-menu-bg', s.bg);
+    if (typeof s.fg === 'string' && s.fg) root.style.setProperty('--dsh-menu-fg', s.fg);
+    if (typeof s.hoverBg === 'string' && s.hoverBg) root.style.setProperty('--dsh-menu-hover', s.hoverBg);
+    if (s.anim === 'fade' || s.anim === 'scale') root.dataset.anim = s.anim;
+  }
 
   let closed = false;
 
