@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
+    />
+    <title>dsh-pet 桌宠壳 · 首次设置</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        padding: 18px 20px;
+        font-family: 'Microsoft YaHei UI', 'PingFang SC', 'Segoe UI', sans-serif;
+        font-size: 13.5px;
+        line-height: 1.6;
+        color: #1f2430;
+        background: #f6f7f9;
+        user-select: none;
+      }
+      h1 {
+        font-size: 15px;
+        margin: 0 0 6px;
+      }
+      p {
+        margin: 4px 0;
+        color: #5b6472;
+        font-size: 12.5px;
+      }
+      input {
+        width: 100%;
+        margin-top: 10px;
+        padding: 8px 10px;
+        font-size: 13px;
+        border: 1px solid #d4d7dd;
+        border-radius: 7px;
+        background: #fff;
+        user-select: text;
+      }
+      input:focus {
+        outline: none;
+        border-color: #2f6fed;
+      }
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-top: 12px;
+      }
+      button {
+        padding: 7px 18px;
+        font-size: 13px;
+        border: 0;
+        border-radius: 7px;
+        background: #2f6fed;
+        color: #fff;
+        cursor: pointer;
+      }
+      button:hover {
+        background: #1b5ae0;
+      }
+      .err {
+        color: #d94f3d;
+        font-size: 12.5px;
+        min-height: 18px;
+        margin-top: 6px;
+      }
+      code {
+        background: #eceef2;
+        padding: 1px 5px;
+        border-radius: 4px;
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>🐴 dsh-pet 桌宠壳 · 首次设置</h1>
+    <p>粘贴桌宠页的完整地址（含 <code>?token=…</code>）——它来自服务器上桌宠服务启动横幅的「浏览器页」一行。</p>
+    <input id="url" type="text" spellcheck="false" placeholder="http://服务器IP:3080/pet/?token=…" />
+    <div class="err" id="err"></div>
+    <div class="row">
+      <button id="save">保存并启动</button>
+      <p style="margin: 0">保存后地址存放在本程序同目录的 <code>config.json</code>，删掉它可重新设置。</p>
+    </div>
+    <script src="./setup.js"></script>
+  </body>
+</html>

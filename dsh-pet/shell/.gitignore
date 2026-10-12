@@ -1,0 +1,4 @@
+# 桌宠页地址（含 ?token=… 访问令牌）—— 绝不进仓库（仓库是 public）
+config.json
+node_modules/
+dist/

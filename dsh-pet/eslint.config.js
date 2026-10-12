@@ -8,7 +8,8 @@ import tseslint from 'typescript-eslint';
 import reactHooks from 'eslint-plugin-react-hooks';
 
 export default tseslint.config(
-  { ignores: ['lib/**', 'scripts/**', 'assets/**', 'runtime/**', 'node_modules/**'] },
+  // shell/ = Electron 桌面壳（CommonJS 主进程，独立于本工程的 TS/ESM 口径，有自己的 package.json）
+  { ignores: ['lib/**', 'scripts/**', 'assets/**', 'runtime/**', 'shell/**', 'node_modules/**'] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {

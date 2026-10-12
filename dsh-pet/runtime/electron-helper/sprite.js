@@ -1023,6 +1023,10 @@ class PetSprite {
     this._interactive = next;
     window.__dshPetDebug.interactive = next;
     if (window.petBridge) window.petBridge.setInteractive(next);
+    // 桌宠壳（shell/，本机全屏透明窗）：同一状态上报给壳的 IPC —— true=壳接管鼠标（点宠物/菜单），
+    // false=壳恢复穿透（点桌面透到下层应用）。壳只注入 petShell 不注入 petBridge，因此
+    // IS_WINDOWED 仍为 false：渲染继续走浏览器分支（DOM 定位），全屏窗即整块屏幕。
+    if (window.petShell) window.petShell.setInteractive(next);
   }
 
   /**
