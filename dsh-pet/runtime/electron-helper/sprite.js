@@ -104,6 +104,10 @@ class PetSprite {
     this.followWalk = null; // 跟随中循环播放的走路动画名（进入 follow 时定一次）
     this.cursorView = null; // 光标源①：页面 mousemove（{x,y,t}，视口坐标）
     this.cursorShell = null; // 光标源②：壳侧 60ms 推送（{x,y,t}，视口坐标；光标离开窗口时唯一来源）
+    // 摸头检测：HIT_BOX 上方 headZoneRatio 比例为头部区域，光标停留 500ms 触发专属动画，冷却 10s
+    this.headZoneRatio = 0.35;
+    this.headPetTimer = null;
+    this.headPetCooldownUntil = 0;
     // 右键菜单（统一自绘组件，两端共用同一份：树+渲染均来自 shared-core）
     this.menuOpen = false; // 菜单开启期间强制整窗可交互（悬停菜单不触发穿透翻转）
     this.menuClose = null; // 当前菜单的 close()（打开时挂载，关闭后置空）
@@ -230,6 +234,12 @@ class PetSprite {
       { signal: ac.signal },
     );
 
+    // 拖文件互动：文件拖到宠物身上触发反应。浏览器形态直接收 HTML5 拖放事件；
+    // 壳形态因 setIgnoreMouseEvents(true) 可能收不到（待实测），不影响浏览器端使用。
+    this.hit.addEventListener('dragenter', (e) => { e.preventDefault(); this.onFileDragEnter(); }, { signal: ac.signal });
+    this.hit.addEventListener('dragover', (e) => e.preventDefault(), { signal: ac.signal });
+    this.hit.addEventListener('drop', (e) => this.onFileDrop(e), { signal: ac.signal });
+
     // 宠物间碰撞（跨窗 broker）：订阅其它宠物状态广播（碰撞检测用）+ 「被撞」事件 → onDeskHit。
     // 注意：退订由窗口销毁自然回收（webContents 销毁后 ipc 事件不再派发），无需显式取消。
     this.others = {}; // petId -> {x,y,vx,vy,size,bottomPad}（其它宠物的最新状态，来自主进程广播）
@@ -281,6 +291,7 @@ class PetSprite {
     this.stopSquash();
     this.stopMove();
     this.stopFollow();
+    if (this.headPetTimer) window.clearTimeout(this.headPetTimer);
     this.el.remove();
   }
 
@@ -779,6 +790,31 @@ class PetSprite {
       cancelAnimationFrame(this.followRef);
       this.followRef = null;
     }
+  }
+
+  // ---- 摸头检测 ----
+  /** 头部区域触发的专属动画（冷却10s；拖拽/飞行/菜单/对话中不触发） */
+  playHeadPet() {
+    if (this.dragState.active || this.throwRef !== null || this.menuOpen || this.chatOpen) return;
+    const anim = '点击回应-害羞惊讶';
+    if (this.animations.clicks.includes(anim)) this.playOnce(anim);
+  }
+
+  // ---- 拖文件互动 ----
+  /** 文件拖入宠物身上：播好奇动画（dragenter 每次拖放只触发一次） */
+  onFileDragEnter() {
+    if (this.dragState.active) return;
+    if (this.animations.clicks.length) this.playOnce(S.pick(this.animations.clicks));
+  }
+
+  /** 文件放下：播开心动画 */
+  onFileDrop(e) {
+    e.preventDefault();
+    const files = e.dataTransfer?.files;
+    if (!files || !files.length) return;
+    this.playOnce('点击回应-开心跃动');
+    // 调试留痕（气泡通道走服务器轮询，本地消息后续可接）
+    console.log('[dsh-pet] 收到文件:', Array.from(files).map((f) => f.name).join('、'));
   }
 
   /** 模式切换（右键菜单「模式」叶子）：切完立刻按新模式重掷动画链，并把选择写回配置。
@@ -1331,6 +1367,26 @@ class PetSprite {
     const px = w.x - this.margin.l;
     const py = w.y - this.margin.t;
     const inBody = px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
+    // 摸头检测：光标在头部区域（HIT_BOX 上方 headZoneRatio）停留 500ms 触发专属动画，冷却 10s。
+    // 与点击不冲突：点击时会取消摸头计时器（onClick 里 clearTimeout）。
+    if (inBody) {
+      const headBottom = r.y + r.h * this.headZoneRatio;
+      if (py <= headBottom) {
+        if (!this.headPetTimer && Date.now() >= this.headPetCooldownUntil) {
+          this.headPetTimer = window.setTimeout(() => {
+            this.headPetTimer = null;
+            this.headPetCooldownUntil = Date.now() + 10000;
+            this.playHeadPet();
+          }, 500);
+        }
+      } else if (this.headPetTimer) {
+        window.clearTimeout(this.headPetTimer);
+        this.headPetTimer = null;
+      }
+    } else if (this.headPetTimer) {
+      window.clearTimeout(this.headPetTimer);
+      this.headPetTimer = null;
+    }
     // 光标位置存**视口坐标**（窗口原点 + 窗口内坐标）：窗口随宠物移动时贴光标不会漂，见 renderTip。
     // 必须在 setTip 之前更新：setTip 变显隐时会立刻渲染一次，晚一步就会用上一次的光标摆位。
     if (inBody) this.tipCursor = { x: this.pos.x - this.margin.l + w.x, y: this.pos.y - this.margin.t + w.y };
@@ -1342,6 +1398,11 @@ class PetSprite {
   }
 
   onClick() {
+    // 点击有自己的动画，取消可能正在计时的摸头触发（避免两个动画叠播）
+    if (this.headPetTimer) {
+      window.clearTimeout(this.headPetTimer);
+      this.headPetTimer = null;
+    }
     const d = this.dragState;
     if (d.active || d.dragging || this.justDragged) return;
     // 积分判定已在 onPointerDown（按下即触发）完成：

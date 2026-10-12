@@ -58,6 +58,24 @@ async function loadConfig() {
   };
 }
 
+// ---------- 动画预加载（空闲时把常用动画拉入 HTTP 缓存，消除切换延迟） ----------
+function preloadCommonAnimations() {
+  if (!config || !config.pets || !config.pets.length) return;
+  const pet = config.pets[0];
+  const animations = pet.animations || {};
+  const names = new Set();
+  for (const name of animations.idle || []) names.add(name);
+  for (const name of animations.turn || []) names.add(name);
+  for (const name of animations.clicks || []) names.add(name);
+  for (const a of (animations.moves?.actions || [])) names.add(a.name);
+  const assetBase = BASE + '/thumb/' + encodeURIComponent(pet.assetRoot || pet.id) + '/';
+  const ext = S.ANIMATION_EXT || '.webm';
+  for (const name of names) {
+    fetch(assetBase + encodeURIComponent(name) + ext, { cache: 'force-cache' }).catch(() => {});
+  }
+  console.log('[dsh-pet] 动画预加载完成:', names.size, '个');
+}
+
 // ---------- 启动（配置校验通过才建 sprite；失败大声报错 + 5s 自动重试） ----------
 async function boot() {
   try {
@@ -94,6 +112,10 @@ async function boot() {
     window.__dshPetDebug.spriteCount = sprites.length;
     for (const s of sprites) s.playIdle();
     startLoops();
+    // 空闲时预加载常用动画（待机/转向/点击/走动），消除首次切换的加载延迟
+    if (typeof requestIdleCallback === 'function') {
+      requestIdleCallback(() => preloadCommonAnimations(), { timeout: 5000 });
+    }
   } catch (e) {
     showError('配置加载失败：' + (e && e.message ? String(e.message) : String(e)));
     scheduleReboot();
