@@ -378,7 +378,6 @@ function renderGlobals() {
         markDirty();
       }),
     );
-  add('系统通知（对话完成 / 失败等）', 'notificationsEnabled');
   add('碎碎念配图', 'whisperImageEnabled');
   add('对话配图', 'chatImageEnabled');
   add('抛掷锁定当前屏幕', 'confineToScreen');

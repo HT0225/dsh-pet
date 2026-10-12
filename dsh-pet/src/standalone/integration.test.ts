@@ -102,10 +102,16 @@ describe('插件宿主半边在独立模式下跑起来了', () => {
     assert.deepEqual(body.pets, {});
   });
 
-  test('/models 是空清单（独立模式没有 llm 服务，但不报错、不静默失败）', async () => {
+  test('/models 是非空清单（已接 DeepSeek flash：不报错、不静默失败、有 provider 可选）', async () => {
     const response = await get('/dsh-pet-7340/models');
     assert.equal(response.status, 200);
-    assert.deepEqual(response.json(), { providers: [] });
+    const body = response.json() as { providers: Array<{ id: string; models?: Array<{ id: string }> }> };
+    assert.ok(Array.isArray(body.providers) && body.providers.length, 'providers 必须非空');
+    assert.equal(body.providers[0]?.id, 'deepseek-official');
+    assert.ok(
+      body.providers[0]?.models?.some((m) => m.id === 'deepseek-flash'),
+      'flash 必须在模型清单里',
+    );
   });
 
   test('/config/meta 的路径口径与 options.configPathsFor 完全一致（镜像不得漂移）', async () => {

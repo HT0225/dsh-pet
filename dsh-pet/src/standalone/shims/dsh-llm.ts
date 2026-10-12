@@ -43,18 +43,33 @@ export interface StandaloneTextBlock {
 }
 
 /**
- * 流式文本拼装：只收集文本块（与调用方 `blocks().filter(b => b.type === 'text')` 的用法一致）。
- * 独立模式只会拿到空流（没有模型后端），这里保持最小可用实现。
+ * 流式文本拼装：只收集文本（与调用方 `blocks().filter(b => b.type === 'text')` 的用法一致）。
+ *
+ * 必须同时认**两种 chunk 形状**（这正是 0.3.7 接入 DeepSeek 后踩过的坑）：
+ *   - DSH 流协议（真包 `@deepseek-ai/dsh-llm` 的 StreamChunk 契约）：
+ *     `block-start` → `text-delta`（增量在 `text` 字段）× N → `finish`（`reason` 进 `finish`）
+ *   - 完整文本块 `{ type: 'text', text }`（本文件旧契约 / 兼容路径）
+ * 只认完整块会把流协议的增量**静默丢光**（表现为「模型未返回文本」）——
+ * 测试若只跑真包路径（src 不经 alias）就测不到这条，故 shim 自身必须有单测。
  */
 export class BlockAssembler {
   private readonly chunks: string[] = [];
 
-  /** 收集一个块；非文本块（工具调用等）在独立模式下被忽略 */
+  /** 终止原因（真包契约：`assembler.finish`；未收到 finish chunk 时为 undefined） */
+  finish: unknown = undefined;
+
+  /** 收集一个 chunk；非文本相关（工具调用等）忽略 */
   push(chunk: unknown): void {
-    if (chunk !== null && typeof chunk === 'object' && (chunk as { type?: unknown }).type === 'text') {
-      const text = (chunk as { text?: unknown }).text;
-      if (typeof text === 'string') this.chunks.push(text);
+    if (chunk === null || typeof chunk !== 'object') return;
+    const c = chunk as { type?: unknown; text?: unknown; reason?: unknown };
+    if (c.type === 'text-delta' || c.type === 'text') {
+      if (typeof c.text === 'string') this.chunks.push(c.text);
+      return;
     }
+    if (c.type === 'finish') {
+      this.finish = c.reason;
+    }
+    // block-start / block-end：正文增量已由 delta 携带，无需单独建块
   }
 
   /** 当前已拼装的块列表 */

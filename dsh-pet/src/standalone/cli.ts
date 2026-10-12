@@ -143,7 +143,8 @@ async function run(logger: StandaloneLogger, options: CliOptions): Promise<void>
     desktopVisible.length === 0
       ? '  桌面小窗    0 只：display 需要 desktop 或 both 才会出现透明小窗（服务仍在运行）'
       : `  桌面小窗    ${desktopVisible.length} 只（无图形环境时自动跳过）`,
-    '  不可用      余额 / 碎碎念 / 对话 / 系统通知（依赖 DSH 的凭证、模型与会话）',
+    '  模型        DeepSeek 官方 deepseek-flash（余额 / 碎碎念 / 对话均可用）',
+    '  不可用      工作状态联动（依赖 DSH 的会话事件）',
     '  退出        Ctrl+C，或 POST /shutdown',
     '',
   ]) {

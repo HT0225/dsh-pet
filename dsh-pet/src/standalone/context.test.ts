@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 
 import { modelCandidates } from '../host/model-selection.ts';
 import { generateWhisper } from '../host/whisper.ts';
-import { STANDALONE_PROVIDER, createStandaloneContext } from './context.ts';
+import { STANDALONE_MODEL, createStandaloneContext } from './context.ts';
 import type { RegisteredRoute, StandaloneLogger } from './context.ts';
 
 /** 静默日志器：测试只断言行为，不刷控制台 */
@@ -121,37 +121,96 @@ describe('createStandaloneContext —— 与 Cordis 对齐的语义', () => {
   });
 });
 
-describe('服务替身的降级口径 —— 显式失败，不假装成功', () => {
-  test('currentSelection 的 model 为空 → 模型候选链为空（生成停在候选阶段）', () => {
+describe('DeepSeek flash 接入 —— 独立模式的模型/凭证/生成口径', () => {
+  test('currentSelection 固定指向 deepseek-official/deepseek-flash，候选链只有这一条（不切换）', () => {
     const context = createStandaloneContext({ port: 1, logger: silentLogger() });
     const selection = agentOf(context).currentSelection();
-    assert.equal(selection.provider, STANDALONE_PROVIDER);
-    // model 必须为空：model-selection.currentModel() 以「provider 与 model 都非空」为有效条件，
-    // 空 model 于是让候选链为空 —— 这是"独立模式不产生任何模型调用"的结构性保证，
-    // 而不是靠某个端点上的 if。
-    assert.equal(selection.model, '');
-    assert.deepEqual(modelCandidates(context.ctx as never, undefined), []);
+    assert.equal(selection.provider, STANDALONE_MODEL.provider);
+    assert.equal(selection.model, STANDALONE_MODEL.model);
+    const candidates = modelCandidates(context.ctx as never, undefined);
+    assert.equal(candidates.length, 1, '不指定 preferred 时候选链只有一条 —— 结构上就不存在「切换」');
+    assert.deepEqual(candidates[0], { provider: STANDALONE_MODEL.provider, model: STANDALONE_MODEL.model });
   });
 
-  test('碎碎念用这份 ctx 得到结构化失败 provider-missing（不联网、不编文案）', async () => {
+  test('凭证：只认 DEEPSEEK_API_KEY 这一个 ref，返回 ResolvedCredential 契约对象（与环境变量同源）', async () => {
     const context = createStandaloneContext({ port: 1, logger: silentLogger() });
-    const result = await generateWhisper(context.ctx as never, '你是一只桌宠');
-    assert.deepEqual(result, { ok: false, reason: 'provider-missing', message: '当前对话未配置模型' });
+    const credentials = credentialsOf(context);
+    // 同进程、同读法（计算属性，与 resolve 内部一致）的同源断言。
+    // 契约：`{ value, source }`——调用方余额路由取 `rc?.value`，返回裸字符串会被判成 undefined。
+    const envValue = process.env['DEEPSEEK_API_KEY'];
+    const got = (await credentials.resolve('DEEPSEEK_API_KEY')) as { value?: string; source?: string } | undefined;
+    if (envValue) {
+      assert.ok(got, '环境变量有值时必须解析出凭证');
+      assert.equal(got.value, envValue, 'value 与环境变量同源（与 Hermes 共用一份 DeepSeek key）');
+      assert.equal(got.source, 'env');
+    } else {
+      assert.equal(got, undefined, '环境变量没值时返回 undefined（余额据此报 credential-missing）');
+    }
+    assert.equal(await credentials.resolve('OTHER_REF'), undefined, '不认识的 ref 一律不给值');
   });
 
-  test('凭证恒不可得；llm 清单为空、生成入口是"迭代即失败"的 async iterable', async () => {
+  test('llm 清单非空（设置页下拉有数据）；stream 是 AsyncIterable（DSH 的 llm.stream 签名）', async () => {
     const context = createStandaloneContext({ port: 1, logger: silentLogger() });
-    assert.equal(await credentialsOf(context).resolve('DEEPSEEK_API_KEY'), undefined);
     const llm = llmOf(context);
-    assert.deepEqual(llm.listProviders(), []);
-    assert.deepEqual(await llm.listModels('deepseek'), []);
-    // 契约：stream() 返回的是 AsyncIterable（DSH 的 llm.stream 签名），不是 Promise。
-    // 旧断言写成 "stream() 自己 reject"，把错误的契约固化了下来：它从未走 for await，
-    // 所以全绿；而真实集成一跑就崩（TypeError + 无人接管的 rejected promise）。
+    assert.deepEqual(llm.listProviders(), [{ id: STANDALONE_MODEL.provider, name: 'DeepSeek 官方' }]);
+    assert.deepEqual(await llm.listModels(STANDALONE_MODEL.provider), [
+      { id: STANDALONE_MODEL.model, name: 'DeepSeek Flash' },
+    ]);
     const streamed = llm.stream({});
-    assert.equal(typeof streamed[Symbol.asyncIterator], 'function');
-    await assert.rejects(async () => {
-      for await (const chunk of streamed) void chunk;
-    }, /独立模式未接入模型/);
+    assert.equal(
+      typeof streamed[Symbol.asyncIterator],
+      'function',
+      '必须是 AsyncIterable，不是 Promise（0.3.4 崩溃根因）',
+    );
+  });
+
+  test('碎碎念走完整链：modelCandidates → llm.stream（SSE）→ BlockAssembler → 拿到真文本', async () => {
+    const context = createStandaloneContext({ port: 1, logger: silentLogger() });
+    // stub DeepSeek SSE：两条 delta + [DONE]；整段只验证「翻译层」对不对，不联网
+    const originalFetch = globalThis.fetch;
+    let seenBody = '';
+    globalThis.fetch = (async (_url: unknown, init?: { body?: string }) => {
+      seenBody = String(init?.body ?? '');
+      const sse = [
+        'data: {"choices":[{"delta":{"content":"在想吃什么"}}]}\n',
+        'data: {"choices":[{"delta":{"content":"呢～"}}]}\n',
+        'data: [DONE]\n',
+        '\n',
+      ].join('\n');
+      return new Response(sse, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    }) as typeof fetch;
+    try {
+      const result = await generateWhisper(context.ctx as never, '你是一只桌宠');
+      assert.equal(result.ok, true, JSON.stringify(result));
+      if (result.ok) assert.equal(result.text, '在想吃什么呢～', '两条 text-delta 必须按序拼成正文');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    // 翻译层发出的请求体：模型 / system / 消息形状对（stream=true 走 SSE）
+    const body = JSON.parse(seenBody) as {
+      model: string;
+      stream: boolean;
+      messages: Array<{ role: string; content: string }>;
+    };
+    assert.equal(body.model, STANDALONE_MODEL.model);
+    assert.equal(body.stream, true);
+    assert.equal(body.messages[0]?.role, 'system');
+    assert.equal(body.messages[0]?.content, '你是一只桌宠');
+    assert.equal(body.messages[1]?.role, 'user');
+    assert.ok(body.messages[1]?.content.length, 'user 指令不能空');
+  });
+
+  test('HTTP 失败（key 无效等）→ 结构化 generate-error，不伪造文案', async () => {
+    const context = createStandaloneContext({ port: 1, logger: silentLogger() });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response('{"error":"bad key"}', { status: 401 })) as typeof fetch;
+    try {
+      const result = await generateWhisper(context.ctx as never, '你是一只桌宠');
+      assert.equal(result.ok, false);
+      assert.equal(result.reason, 'generate-error');
+      assert.match(result.message ?? '', /401/, '错误里要能看到 HTTP 状态，便于排查 key');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });
