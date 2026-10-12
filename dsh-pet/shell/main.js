@@ -15,7 +15,7 @@
  *  - **window.open 交给系统浏览器**：页面右键「桌宠设置」在系统浏览器里打开设置页，
  *    壳内不开第二个窗。
  */
-const { app, BrowserWindow, ipcMain, Menu, Tray, globalShortcut, screen, shell } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, Menu, Tray, globalShortcut, screen, shell } = require('electron');
 const fs = require('fs');
 const path = require('path');
 
@@ -48,6 +48,27 @@ function writeConfig(patch) {
   const next = { ...readConfig(), ...patch };
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(next, null, 2) + '\n', 'utf8');
   return next;
+}
+
+/**
+ * 壳日志：exe 同目录的 shell.log（append；无写权限时回退 userData）。
+ * 排障刚需：启动/页面加载失败/退出都会留痕，用户双击没反应时直接看这个文件。
+ */
+const LOG_PATH = (() => {
+  const primary = path.join(BASE_DIR, 'shell.log');
+  try {
+    fs.appendFileSync(primary, ''); // 探测可写
+    return primary;
+  } catch {
+    return path.join(app.getPath('userData'), 'shell.log');
+  }
+})();
+function log(msg) {
+  try {
+    fs.appendFileSync(LOG_PATH, `[${new Date().toLocaleString()}] ${msg}\n`, 'utf8');
+  } catch {
+    /* 日志失败不影响主流程 */
+  }
 }
 
 let petWin = null;
@@ -89,6 +110,7 @@ function createPetWindow(url) {
     },
   });
   petWin.setAlwaysOnTop(true, 'screen-saver'); // 盖过普通窗口与普通置顶窗
+  log(`主窗创建 ${width}x${height} @(${x},${y}) workArea`);
   petWin.setIgnoreMouseEvents(true, { forward: true }); // 默认穿透；forward 保留 mousemove 给页面
 
   // 页面 window.open（右键「桌宠设置」等）→ 系统浏览器打开，壳内不开新窗
@@ -97,6 +119,7 @@ function createPetWindow(url) {
     return { action: 'deny' };
   });
   petWin.webContents.on('did-finish-load', () => {
+    log('页面加载完成: ' + url);
     petVisible = true;
     if (petWin && !petWin.isVisible()) petWin.showInactive(); // showInactive：不抢当前应用焦点
     // 页面每次加载/刷新后推一次互动开关的当前值（页面据此决定是否响应鼠标）
@@ -114,6 +137,7 @@ function createPetWindow(url) {
       }, 2000 * retries);
     } else {
       console.error('[dsh-pet-shell] 页面加载失败:', errorCode, errorDescription, url);
+      log('页面加载失败(重试耗尽): ' + errorCode + ' ' + errorDescription + ' url=' + url);
     }
   });
   void petWin.loadURL(url);
@@ -235,6 +259,18 @@ function createSetupWindow() {
 // 单实例：重复启动 = 唤起已有的壳，不叠第二个全屏窗
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
+  // 没拿到单实例锁：**别再静默退出**（用户双击没任何反应会完全懵）——弹原生框说明现状与处理办法。
+  // 触发场景：另一个实例真在跑；或上次是异常关闭、锁未释放（Windows 上偶发），此时按框里指引处理即可。
+  log('单实例锁被占用（已有实例在跑，或上次异常关闭未释放锁）');
+  dialog.showErrorBox(
+    'dsh-pet 桌宠已经在运行',
+    '可能的情况与处理：\n\n' +
+      '1) 宠物其实已经在你桌面上 —— 看看右下角托盘区（含隐藏图标 ^）的马头图标，' +
+      '单击它即可显示/隐藏宠物。\n\n' +
+      '2) 托盘没有图标 —— 说明上一次退出没退干净、锁还占着：' +
+      '按 Ctrl+Shift+Esc 打开任务管理器，结束所有 dsh-pet-shell.exe 进程，再重新双击启动。\n\n' +
+      '（排查记录见 exe 同目录的 shell.log）',
+  );
   app.quit();
 } else {
   app.on('second-instance', () => {
@@ -245,8 +281,10 @@ if (!gotLock) {
   });
 
   app.whenReady().then(() => {
+    log('壳启动 v' + app.getVersion() + ' config=' + CONFIG_PATH);
     const url = readUrl();
     if (url) {
+      log('加载桌宠页: ' + url);
       createPetWindow(url);
       createTray();
       registerShortcuts();
@@ -259,6 +297,17 @@ if (!gotLock) {
 // 托盘常驻：关窗不退出（本壳只有托盘与退出路径）
 app.on('window-all-closed', () => {});
 app.on('will-quit', () => {
+  log('退出');
   globalShortcut.unregisterAll();
   if (tray) tray.destroy();
+});
+// 退出兜底：quit 流程若被拖住（渲染进程卡住等），3 秒后强制结束进程 —— 防止"看着关了、
+// 进程还在"导致单实例锁不释放，下次双击静默失败（0.2.0 用户实际踩过）。
+let forceQuitTimer = null;
+app.on('before-quit', () => {
+  if (forceQuitTimer) return;
+  forceQuitTimer = setTimeout(() => {
+    log('quit 流程超时，强制退出');
+    app.exit(0);
+  }, 3000);
 });

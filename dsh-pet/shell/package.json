@@ -1,6 +1,6 @@
 {
   "name": "dsh-pet-shell",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "dsh-pet 桌宠桌面壳：全屏透明置顶窗加载服务器桌宠页，让宠物活在整个桌面上（点击穿透 + 托盘）",
   "main": "main.js",
