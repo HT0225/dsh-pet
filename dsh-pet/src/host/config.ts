@@ -36,7 +36,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
 
-import { DEFAULT_MENU_ITEMS, DEFAULT_MENU_STYLE, MENU_ITEM_IDS } from '../shared/types';
+import { DEFAULT_MENU_ITEMS, DEFAULT_MENU_STYLE, MENU_ITEM_IDS, PET_MODES } from '../shared/types';
 import { dirname, join } from 'node:path';
 
 /** 位置角落白名单 */
@@ -46,6 +46,9 @@ const CORNER_SET: ReadonlySet<string> = new Set(CORNERS);
 /** display 白名单 */
 const PET_DISPLAYS = ['web', 'desktop', 'both', 'none'] as const;
 const PET_DISPLAY_SET: ReadonlySet<string> = new Set(PET_DISPLAYS);
+
+/** 行为模式白名单（pets[].mode：wander=自由散步 / follow=跟随鼠标 / idle=原地待机） */
+const PET_MODE_SET: ReadonlySet<string> = new Set<string>(PET_MODES);
 
 /** id 禁用的字符（Windows 文件名保留符 + 控制字符，防配置值逃逸文件路径）。
  *  同时被 thumb 路由的 petId 校验复用：那里同样是"标识符不得当路径片段"。 */
@@ -424,9 +427,12 @@ function mergePets(
   seenIds: Set<string>,
 ): Record<string, unknown>[] {
   const basePet: Record<string, unknown> = basePets[0] ?? {};
+  // 兜底返回内置默认列表时也要补 mode（见 resolvePetMode 注释：成品的 mode 必须恒在）
+  const withMode = (list: Record<string, unknown>[]): Record<string, unknown>[] =>
+    list.map((p) => ({ ...p, mode: resolvePetMode(p, basePet) }));
   if (!Array.isArray(raw) || raw.length === 0) {
     warnOnce(`${label}:pets`, `「${label}」的 pets 缺失或为空，已取默认宠物列表`);
-    return basePets;
+    return withMode(basePets);
   }
   const out: Record<string, unknown>[] = [];
   for (const item of raw) {
@@ -435,7 +441,7 @@ function mergePets(
   }
   if (out.length === 0) {
     warnOnce(`${label}:pets`, `「${label}」的 pets 全部被跳过（id 非法/重复/冲突），已取默认宠物列表`);
-    return basePets;
+    return withMode(basePets);
   }
   return out;
 }
@@ -512,13 +518,23 @@ export function menuStyleValid(v: unknown): boolean {
   return true;
 }
 
-/** 菜单项：缺失 → 默认（= 上线前的硬编码菜单）；显式但非法 → 告警 + 默认 */
+/** 菜单项：缺失 → 默认（= 上线前的硬编码菜单）；显式但非法 → 告警 + 默认。
+ *  合并后**补齐默认清单里缺的 id**（追加到末尾）：新增菜单项（如 mode）靠这条自动下发到
+ *  老配置——否则用户已保存的 menuItems 永远没有新条目，功能等于没上。 */
 function petMenuItems(own: unknown, def: unknown, label: string, id: string): Record<string, unknown>[] {
-  if (Array.isArray(own) && menuItemsValid(own)) return own as Record<string, unknown>[];
-  if (own !== undefined && own !== null) {
-    warnOnce(`${label}:menuItems:${id}`, `宠物「${id}」的 menuItems 非法，已取默认值`);
+  let list: Record<string, unknown>[];
+  if (Array.isArray(own) && menuItemsValid(own)) {
+    list = own as Record<string, unknown>[];
+  } else {
+    if (own !== undefined && own !== null) {
+      warnOnce(`${label}:menuItems:${id}`, `宠物「${id}」的 menuItems 非法，已取默认值`);
+    }
+    list = (Array.isArray(def) && menuItemsValid(def) ? def : DEFAULT_MENU_ITEMS) as Record<string, unknown>[];
   }
-  return (Array.isArray(def) && menuItemsValid(def) ? def : DEFAULT_MENU_ITEMS) as Record<string, unknown>[];
+  const missing = DEFAULT_MENU_ITEMS.filter(
+    (d) => !list.some((x) => x && typeof x === 'object' && (x as { id?: unknown }).id === d.id),
+  );
+  return missing.length ? [...list, ...missing.map((d) => ({ ...d }))] : list;
 }
 
 /** 菜单外观：缺失 → 默认；显式但非法 → 告警 + 默认；合法 → 与默认逐字段合并（缺子字段补默认） */
@@ -533,6 +549,18 @@ function petMenuStyle(own: unknown, def: unknown, label: string, id: string): Re
     return { ...DEFAULT_MENU_STYLE, ...(def as Record<string, unknown>) };
   }
   return { ...DEFAULT_MENU_STYLE };
+}
+
+/** mode 的读取侧回落（成品的 mode 字段永远合法）：显式合法 → 原样；否则按老配置迁移
+ *  （fixedEnabled===true → idle），再退回默认 wander。mergePet 与「无用户层/ pets 缺失 →
+ *  直接返回内置默认列表」那条兜底**共用本函数**——否则同一份配置「有没有用户层」读出的
+ *  成品一个有 mode 一个没有，syncUserConfigFromDefault 的等价性就破了（该测试钉住）。 */
+function resolvePetMode(p: Record<string, unknown>, base: Record<string, unknown>): string {
+  const own = p.mode;
+  if (typeof own === 'string' && PET_MODE_SET.has(own)) return own;
+  if (p.fixedEnabled === true) return 'idle';
+  if (typeof base.mode === 'string' && PET_MODE_SET.has(base.mode)) return base.mode;
+  return 'wander';
 }
 
 /** 一只实例 → 完成品实例（id 必须自己的且全局唯一；其余字段没写/非法 → 默认 + 告警） */
@@ -566,6 +594,8 @@ function mergePet(
     whisperEnabled: petBool(p.whisperEnabled, base.whisperEnabled, label, 'whisperEnabled', id),
     workStatusEnabled: petBool(p.workStatusEnabled, base.workStatusEnabled, label, 'workStatusEnabled', id),
     fixedEnabled: petBool(p.fixedEnabled, base.fixedEnabled, label, 'fixedEnabled', id),
+    // 行为模式（mode，取代设置页原「宠物固定」开关）：回落规则见 resolvePetMode（读取侧唯一入口）
+    mode: resolvePetMode(p, base),
     display: petEnum(p.display, PET_DISPLAY_SET, base.display, label, 'display', id),
     menuItems: petMenuItems(p.menuItems, base.menuItems, label, id),
     menuStyle: petMenuStyle(p.menuStyle, base.menuStyle, label, id),
@@ -676,6 +706,10 @@ export function saveUserConfig(
     // 传了必须是布尔，没传则走下面的读取侧默认值（内置默认 false = 保持原行为）。
     const fixedEnabled = pp.fixedEnabled;
     if (fixedEnabled !== undefined && typeof fixedEnabled !== 'boolean') return null;
+    // 行为模式（mode）：可选；传了必须是 wander/follow/idle 之一（与 fixedEnabled 同语义：
+    // 没传 = 落盘缺键 → 读取侧按 fixedEnabled 迁移回落）
+    const mode = pp.mode;
+    if (mode !== undefined && !(typeof mode === 'string' && PET_MODE_SET.has(mode))) return null;
     const display = String(pp.display ?? '');
     if (!PET_DISPLAY_SET.has(display)) return null;
     // 菜单项 / 菜单外观（条目级，设置页「右键菜单」区编辑）：传了必须整段合法（后端权威闸，
@@ -698,6 +732,7 @@ export function saveUserConfig(
       whisperEnabled,
       workStatusEnabled,
       fixedEnabled,
+      mode,
       display,
       menuItems,
       menuStyle,

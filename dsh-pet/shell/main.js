@@ -146,6 +146,20 @@ function createPetWindow(url) {
     }
   });
   void petWin.loadURL(url);
+
+  // 光标轮询（跟随鼠标模式的兜底源，60ms ≈ 16Hz）：setIgnoreMouseEvents(true) 期间页面靠
+  // forward 转发的 mousemove 拿光标，但光标落到任务栏条 / 更高层置顶窗上时钩子收不到——
+  // 这里按**真实光标**（screen.getCursorScreenPoint）独立推送给页面，断流也不断跟。
+  // 单位：getBounds 与 getCursorScreenPoint 同为 DIP（壳不强制 device scale，未线性化），
+  // 相减即窗口局部 DIP = 本页 CSS px（壳无 zoomFactor，页面原点 = 窗口原点）。
+  const cursorTimer = setInterval(() => {
+    if (!petWin || petWin.isDestroyed()) return;
+    const b = petWin.getBounds();
+    if (b.width < 8 || b.height < 8) return; // 窗口尺寸还没落定
+    const p = screen.getCursorScreenPoint();
+    petWin.webContents.send('pet-shell:cursor', { x: p.x - b.x, y: p.y - b.y });
+  }, 60);
+  petWin.on('closed', () => clearInterval(cursorTimer));
 }
 
 // 页面上报：true = 光标在宠物/菜单/弹窗上 → 壳接管鼠标；false = 恢复穿透。

@@ -7,6 +7,14 @@
  */
 'use strict';
 
+/** 跟随鼠标的基础行走速度（视口 CSS px/s，按宠物尺寸相对 PET_REF_WIDTH 缩放）。
+ *  取值依据：漫游走动是「动画驱动」的慢速（约 40~200px/s），跟随需要跟得上光标移动、
+ *  又不能快到像瞬移——1500px 的屏宽约 3s 走完一个来回，肉眼是"小跑"而不是滑行。 */
+const FOLLOW_SPEED = 460;
+
+/** 行为模式合法值（与 src/shared/types.ts 的 PET_MODES 同步；页面是手写 JS，不 import 构建产物） */
+const PET_MODES = ['wander', 'follow', 'idle'];
+
 // ---------- 单只宠物（行为与浏览器 PetCard 一致；纯逻辑来自 src/shared） ----------
 class PetSprite {
   constructor(pet) {
@@ -88,6 +96,14 @@ class PetSprite {
     this.moveToken = 0;
     this.pendingMove = null;
     this.customPos = null; // 拖拽后的会话内位置（{rx, ry} 比例）；restart 回角落
+    // 行为模式（pets[].mode：wander=自由散步 / follow=跟随鼠标 / idle=原地待机）。
+    // 成品由 host 保证合法并已按 fixedEnabled 迁移；这里的回落只防手改配置漏字段。
+    this.mode = PET_MODES.includes(pet.mode) ? pet.mode : pet.fixedEnabled === true ? 'idle' : 'wander';
+    this.followRef = null; // 跟随循环 rAF 句柄
+    this.followToken = 0; // 跟随循环代际（stopFollow 递增即掐断旧循环）
+    this.followWalk = null; // 跟随中循环播放的走路动画名（进入 follow 时定一次）
+    this.cursorView = null; // 光标源①：页面 mousemove（{x,y,t}，视口坐标）
+    this.cursorShell = null; // 光标源②：壳侧 60ms 推送（{x,y,t}，视口坐标；光标离开窗口时唯一来源）
     // 右键菜单（统一自绘组件，两端共用同一份：树+渲染均来自 shared-core）
     this.menuOpen = false; // 菜单开启期间强制整窗可交互（悬停菜单不触发穿透翻转）
     this.menuClose = null; // 当前菜单的 close()（打开时挂载，关闭后置空）
@@ -186,6 +202,15 @@ class PetSprite {
         }
       });
     }
+    // 光标源②（跟随鼠标模式的兜底）：壳侧每 60ms 推**真实光标**（screen.getCursorScreenPoint
+    // 减窗口原点）。页面 mousemove 在光标落到任务栏条 / 更高层置顶窗上时会断流——那里正是
+    // 需要继续跟随的时刻。坐标 = 窗口局部 DIP = 本页 CSS px（壳无 zoom、页面原点=窗口原点）。
+    if (window.petShell && typeof window.petShell.onCursor === 'function') {
+      window.petShell.onCursor((pt) => {
+        if (!pt || !Number.isFinite(pt.x) || !Number.isFinite(pt.y)) return;
+        this.cursorShell = { x: pt.x, y: pt.y, t: performance.now() };
+      });
+    }
     window.addEventListener('pointerup', (e) => this.onPointerUp(e), { signal: ac.signal });
     window.addEventListener('pointercancel', (e) => this.onPointerUp(e), { signal: ac.signal });
     this.hit.addEventListener('lostpointercapture', (e) => this.onPointerUp(e), { signal: ac.signal });
@@ -236,6 +261,9 @@ class PetSprite {
         if (Number.isFinite(vx) && Number.isFinite(vy)) this.onDeskHit(toLocal(vx), toLocal(vy));
       });
     }
+    // 配置就是跟随模式（含设置页保存后 storage 事件整只重建）：建完即进入跟随循环。
+    // 循环本身在拿到光标位置前不会动（cursorNow() 返回 null → 空转），无副作用。
+    if (this.mode === 'follow') this.startFollow();
   }
 
   dispose() {
@@ -252,6 +280,7 @@ class PetSprite {
     this.stopDragFollow();
     this.stopSquash();
     this.stopMove();
+    this.stopFollow();
     this.el.remove();
   }
 
@@ -470,9 +499,12 @@ class PetSprite {
     this.stopMove();
     const { animations, animationWeights } = { animations: this.animations, animationWeights: this.weights };
     const roll = Math.random();
-    // 宠物固定（pets[].fixedEnabled）：掷骰时把「转向 / 移动」两档权重按 0 算（与浏览器同一份
-    // 决策）——随机链不再让宠物自己翻朝向或走开。右键菜单点播与 /anim 接口不走这里，不受影响。
-    const k = S.rollKind(roll, animationWeights, { fixed: this.pet.fixedEnabled });
+    // 宠物固定 / 非散步模式（pets[].fixedEnabled 或 mode≠wander）：掷骰时把「转向 / 移动」两档
+    // 权重按 0 算（与浏览器同一份决策）——随机链不再让宠物自己翻朝向或走开。idle 模式靠这行
+    // 保证「不动他就不会有位置变化」；follow 模式的原地待机也共用它（位移由跟随循环负责）。
+    // 右键菜单点播与 /anim 接口不走这里，不受影响。注意写法受 pickers.test.ts 源码守卫钉住
+    // （`fixed: this.pet.fixedEnabled` 的字面形态），改动前先看那个测试。
+    const k = S.rollKind(roll, animationWeights, { fixed: this.pet.fixedEnabled === true || this.mode !== 'wander' });
     let next;
     if (k === 'idle') {
       next = S.pick(animations.idle, this.anim);
@@ -636,6 +668,136 @@ class PetSprite {
     if (this.moveRef !== null) {
       cancelAnimationFrame(this.moveRef);
       this.moveRef = null;
+    }
+  }
+
+  // ---- 跟随鼠标（mode='follow'）：rAF 朝光标**水平**走动（只左右跟、不上下飞） ----
+  // 为什么只左右：漫游/拖拽全都是"地面生物"语义（planMove 只算 x，y 恒定），动画池里也只有
+  // 走路没有飞行——上下平移会变成"贴地滑行"的怪相。光标在高处时宠物走到其正下方即止。
+
+  /** 取最新光标位置（视口坐标）：mousemove 与壳侧推送**取较新者**，没有则 null（跟随空转） */
+  cursorNow() {
+    const ev = this.cursorView;
+    const sh = this.cursorShell;
+    if (!ev) return sh ? { x: sh.x, y: sh.y } : null;
+    if (!sh) return { x: ev.x, y: ev.y };
+    return sh.t >= ev.t ? { x: sh.x, y: sh.y } : { x: ev.x, y: ev.y };
+  }
+
+  /** 朝向切换（跟随专用）：资产默认朝左画，朝右 = scaleX(-1) 镜像（与漫游/点播同一语义）。
+   *  只更新前台视频的 transform——pending 那路由 switchTo 的 onReady 按 this.facing 补上。 */
+  setFacing(f) {
+    if (this.facing === f) return;
+    this.facing = f;
+    const front = this.front === 0 ? this.videoA : this.videoB;
+    if (front) front.style.transform = f === 'right' ? 'scaleX(-1)' : '';
+  }
+
+  /** 跟随单帧：朝光标走一步（限速 + 半身位死区），到位/被占用时停在原地 */
+  followTick(dt) {
+    const cur = this.cursorNow();
+    if (!cur) return;
+    // 手握宠物、飞行、右键菜单、对话框、点击回应动画期间：跟随让位（这些交互优先）
+    if (this.dragState.active || this.throwRef !== null || this.menuOpen || this.chatOpen) return;
+    if (this.once && this.animations.clicks.includes(this.anim)) return;
+    // 目标夹进显示器并集：光标在任务栏条/屏外时，走到最近的屏幕边缘即止（绝不走进空洞）
+    const t = S.clampPointToRegion(AREAS, cur.x, cur.y);
+    if (!t) return;
+    const cx = this.pos.x + this.halfW;
+    const cy = this.pos.y + this.halfH;
+    const dx = t.x - cx;
+    const dead = Math.max(24, this.halfW * 0.5); // 水平死区：半个身位，走到光标正下方就算到
+    if (Math.abs(dx) <= dead) {
+      // 到位：还在播走路动画就回随机链（follow 模式掷骰按 fixed 算，只会选原地动画）
+      const moves = this.animations.moves.actions.map((a) => a.name);
+      if (moves.includes(this.anim)) this.playIdle();
+      return;
+    }
+    const distScale = this.size / S.PET_REF_WIDTH;
+    const step = Math.min(FOLLOW_SPEED * distScale * dt, Math.abs(dx) - dead);
+    const nx = cx + (dx > 0 ? step : -step);
+    this.setFacing(dx > 0 ? 'right' : 'left');
+    // 同步会话位置（resize/relayout 的 position() 会按它复位，不更新会被拉回旧落点）
+    this.customPos = { rx: nx / VIEW.w, ry: cy / VIEW.h };
+    this.sendBounds(nx - this.halfW, this.pos.y);
+    // 走路动画：不在走路池里就切到跟随专用走路动画（loop 播放，不触发 ended → 不与随机链打架）
+    const walk = this.followWalk;
+    if (walk && this.anim !== walk && !this.pending) {
+      this.anim = walk; // 与 tryMove 同一约定：anim 先行，switchTo 只管换视频
+      this.once = false;
+      this.switchTo(walk, false);
+    }
+  }
+
+  /** 进入跟随循环（rAF；token 代际防旧循环复活；异常单帧兜底，绝不让循环静默死掉） */
+  startFollow() {
+    if (this.followRef !== null) return;
+    if (!this.followWalk && this.animations.moves.actions.length) {
+      this.followWalk = this.animations.moves.actions[0].name;
+    }
+    const token = ++this.followToken;
+    let last = performance.now();
+    const step = () => {
+      if (this.followToken !== token) return;
+      const now = performance.now();
+      const dt = Math.min((now - last) / 1000, 1 / 15); // 掉帧钳制：单帧最多按 66ms 计步
+      last = now;
+      try {
+        this.followTick(dt);
+      } catch (err) {
+        console.warn('[dsh-pet] 跟随循环单帧异常（已跳过本帧）pet=' + this.pet.id, err);
+      }
+      this.followRef = requestAnimationFrame(step);
+    };
+    this.followRef = requestAnimationFrame(step);
+  }
+
+  stopFollow() {
+    this.followToken++;
+    if (this.followRef !== null) {
+      cancelAnimationFrame(this.followRef);
+      this.followRef = null;
+    }
+  }
+
+  /** 模式切换（右键菜单「模式」叶子）：切完立刻按新模式重掷动画链，并把选择写回配置。
+   *  同模式点击 = 空操作（不发请求）。 */
+  setMode(mode) {
+    if (!PET_MODES.includes(mode) || mode === this.mode) return;
+    this.mode = mode;
+    if (mode === 'follow') this.startFollow();
+    else this.stopFollow();
+    this.playIdle(); // wander=放开随机链 / idle=按 fixed 掷骰 / follow=原地动画（位移交给跟随循环）
+    console.log('[dsh-pet] ' + new Date().toTimeString().slice(0, 8) + ' 模式切换 pet=' + this.pet.id + ' -> ' + mode);
+    void this.persistMode(mode);
+  }
+
+  /** 模式落盘：与设置页同一条 PUT /config 白名单通道（GET 成品 → 只改本宠物 mode → PUT）。
+   *  只带 pets，其余顶层字段宿主从磁盘透传保留；文件宠物（extra）不进请求。
+   *  失败只记日志——会话内模式已经生效，绝不因为写不进去吞掉这次点击。 */
+  async persistMode(mode) {
+    try {
+      const res = await fetch(CONFIG.configUrl, { cache: 'no-store' });
+      if (!res.ok) throw new Error('config http ' + res.status);
+      const merged = await res.json();
+      const main = merged && merged.main;
+      if (!main || !Array.isArray(main.pets)) return;
+      const pets = main.pets
+        .filter((p) => p && p.extra !== true)
+        .map((p) => (String(p.id) === this.pet.id ? { ...p, mode } : p));
+      const put = await fetch(CONFIG.configUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pets }),
+      });
+      if (!put.ok) {
+        const txt = await put.text().catch(() => '');
+        console.warn('[dsh-pet] 模式落盘失败 http ' + put.status + ' ' + String(txt).slice(0, 200));
+        return;
+      }
+      console.log('[dsh-pet] 模式已落盘 pet=' + this.pet.id + ' mode=' + mode);
+    } catch (e) {
+      console.warn('[dsh-pet] 模式落盘异常（本轮仍生效，刷新后回配置值）pet=' + this.pet.id, e);
     }
   }
 
@@ -1100,6 +1262,17 @@ class PetSprite {
   }
 
   onMouseMove(e) {
+    // 记录光标（跟随鼠标模式的数据源①）：**视口坐标**，与 tipCursor 同一套换算（窗口原点 +
+    // 窗口内坐标）。必须先于下面所有早退分支——拖拽/菜单/互动暂停期间光标照样要记，
+    // 否则这些交互一结束，跟随就会朝着一个过期的位置走。
+    if (Number.isFinite(e.clientX) && Number.isFinite(e.clientY)) {
+      const wc = this.pointerLocal(e);
+      this.cursorView = {
+        x: this.pos.x - this.margin.l + wc.x,
+        y: this.pos.y - this.margin.t + wc.y,
+        t: performance.now(),
+      };
+    }
     // 拖拽态下所有按键已松开：说明 pointerup/pointercancel/lostpointercapture 全部丢失，
     // 就地按松手收尾，否则 dragState.active 与 inputBusy 永久为 true（穿透永不恢复）。
     if (this.dragState.active && e.buttons === 0) {
@@ -1204,6 +1377,7 @@ class PetSprite {
       windowed: IS_WINDOWED,
       balanceEnabled: this.pet.balanceEnabled === true,
       animations: this.animations,
+      currentMode: this.mode, // 模式子菜单：给当前档打 ✓（shared/menu.ts 按它加前缀）
     });
     if (!tree.length) return;
     this.menuOpen = true;
@@ -1259,6 +1433,10 @@ class PetSprite {
     }
     if (leaf.action === 'reload') {
       this.reloadDesktop(); // 请宿主重启桌面 Helper：全部桌面宠物窗口按最新配置重建
+      return;
+    }
+    if (leaf.action === 'set-mode') {
+      this.setMode(leaf.mode); // 模式子菜单叶子：切模式 + 落盘（同模式点击是空操作）
       return;
     }
     if (!leaf.anim) return;

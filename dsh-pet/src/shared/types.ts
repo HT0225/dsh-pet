@@ -106,6 +106,12 @@ export interface Pet {
    *  （余额/碎碎念/工作状态）、点击回应与拖拽一律照常——用户主动触发的不受此限制。
    *  缺失默认 false（保持原行为：会自己走、会自己翻） */
   fixedEnabled: boolean;
+  /** 行为模式（三选一，取代设置页原「宠物固定」开关；缺失按 fixedEnabled 回落）：
+   *  wander=自由散步（随机链照常掷骰，会自己走动/转向）· follow=跟随鼠标（朝光标水平走动，
+   *  只左右跟、不上下飞）· idle=原地待机（等价旧 fixedEnabled：位置永不变，只播原地动画）。
+   *  **只约束随机链**：右键点播、点击回应、拖拽抛掷、事件动画一律不受影响（与 fixedEnabled 同语义）。
+   *  缺失时消费端回落：fixedEnabled===true → idle，否则 wander（老配置行为逐位不变） */
+  mode?: PetMode;
   /** 右键菜单项（条目级，host 合并已填默认）：顺序/文字/显隐见 MenuItemConfig */
   menuItems: MenuItemConfig[];
   /** 菜单外观（条目级，host 合并已填默认）：动画/字号/圆角/配色见 MenuStyleConfig */
@@ -147,7 +153,8 @@ export interface ModelSelection {
 /** 菜单项（条目级）：右键菜单的工具项与「动作」分支 —— 数组顺序 = 菜单渲染顺序 */
 export interface MenuItemConfig {
   /** 固定 id（不可改）：site=设置/打开网站 · balance=余额 · whisper=碎碎念 · chat=对话 ·
-   *  home=回初始位置 · reload=重载配置 · animations=动作（动画树分支，label 即分支标题） */
+   *  mode=模式（自由散步/跟随鼠标/原地待机 子菜单，label 即分支标题）· home=回初始位置 ·
+   *  reload=重载配置 · animations=动作（动画树分支，label 即分支标题） */
   id: string;
   /** 显示文字（自定义，1~40 字符） */
   label: string;
@@ -171,8 +178,21 @@ export interface MenuStyleConfig {
   hoverBg: string;
 }
 
+/** 行为模式（pets[].mode）：自由散步 / 跟随鼠标 / 原地待机（取代原「宠物固定」开关） */
+export type PetMode = 'wander' | 'follow' | 'idle';
+
+/** 全部合法模式值（host 校验与组装共用；顺序 = 菜单子项/设置页下拉的展示顺序） */
+export const PET_MODES = ['wander', 'follow', 'idle'] as const;
+
+/** 模式 → 展示名（右键菜单叶子与设置页下拉共用；改动需同步 settings.js 的内嵌副本） */
+export const PET_MODE_LABELS: Record<PetMode, string> = {
+  wander: '自由散步',
+  follow: '跟随鼠标',
+  idle: '原地待机',
+};
+
 /** 菜单项固定 id 集合（校验与组装共用，顺序 = 未配置时的默认菜单顺序） */
-export const MENU_ITEM_IDS = ['site', 'balance', 'whisper', 'chat', 'home', 'reload', 'animations'] as const;
+export const MENU_ITEM_IDS = ['site', 'balance', 'whisper', 'chat', 'mode', 'home', 'reload', 'animations'] as const;
 
 /** 未配置时的默认菜单项（= 上线前的硬编码菜单，行为零变化） */
 export const DEFAULT_MENU_ITEMS: MenuItemConfig[] = [
@@ -180,6 +200,7 @@ export const DEFAULT_MENU_ITEMS: MenuItemConfig[] = [
   { id: 'balance', label: '查看余额', visible: true },
   { id: 'whisper', label: '碎碎念', visible: true },
   { id: 'chat', label: '对话', visible: true },
+  { id: 'mode', label: '模式', visible: true },
   { id: 'home', label: '回到初始位置', visible: true },
   { id: 'reload', label: '重载配置', visible: true },
   { id: 'animations', label: '动作', visible: true },

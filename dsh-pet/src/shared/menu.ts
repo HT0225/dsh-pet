@@ -22,8 +22,8 @@
 //   - 点击项 / 点击菜单外 / Esc 关闭。
 //   不再使用"逐项 mouseleave 延迟关闭定时器"——旧实现里鼠标从分类项移向三级面板时，
 //   会同时给父项（动作）排下无人取消的关闭定时器，导致二级+三级一起消失。
-import { DEFAULT_MENU_ITEMS, DEFAULT_MENU_STYLE } from './types';
-import type { Animations, Category, MenuItemConfig, MenuStyleConfig } from './types';
+import { DEFAULT_MENU_ITEMS, DEFAULT_MENU_STYLE, PET_MODES, PET_MODE_LABELS } from './types';
+import type { Animations, Category, MenuItemConfig, MenuStyleConfig, PetMode } from './types';
 
 /** 叶子：可点击的菜单项 */
 export interface MenuLeaf {
@@ -33,9 +33,11 @@ export interface MenuLeaf {
   /** 自定义动作：open-site=打开网站（桌面形态）/ settings=桌宠设置页（浏览器形态）/
    * show-balance=查看余额；whisper=立即碎碎念一句；chat=打开对话弹窗；home=回到初始位置；
    * reload=重载配置（桌面端专属：重启桌面 Helper，全部桌面宠物窗口按最新配置重建——
-   * 浏览器端刷新页面即可，不注入此项）。
+   * 浏览器端刷新页面即可，不注入此项）；set-mode=切换行为模式（值见 mode 字段）。
    * 手动触发均不受 whisperEnabled 影响（该字段只关自动周期轮询） */
-  action?: 'open-site' | 'settings' | 'show-balance' | 'whisper' | 'chat' | 'home' | 'reload';
+  action?: 'open-site' | 'settings' | 'show-balance' | 'whisper' | 'chat' | 'home' | 'reload' | 'set-mode';
+  /** action==='set-mode' 时的目标模式（wander=自由散步 / follow=跟随鼠标 / idle=原地待机） */
+  mode?: PetMode;
 }
 
 /** 分支：带子菜单的项 */
@@ -103,11 +105,13 @@ export function isNoMirrorAnimation(categories: Category[], anim: string): boole
  * 数组顺序 = 菜单顺序，visible=false 跳过，label 用配置文字；未知 id 跳过（配置漂移防御）。
  * site 项按形态给动作：桌面 = open-site（打开网站）/ 浏览器 = settings（桌宠设置页）；
  * balance 项还要 pet 的 balanceEnabled 为真（该宠物没开余额就不给入口）；
- * animations 项 = buildMenuTree 的整棵动画树，label 覆盖其根标题（「动作」→ 自定义）。
+ * animations 项 = buildMenuTree 的整棵动画树，label 覆盖其根标题（「动作」→ 自定义）；
+ * mode 项 = 三档模式子菜单（叶子 action='set-mode'），opts.currentMode 给当前档打 ✓ 前缀
+ * （渲染是纯文本 span，直接写进 label 即可；不传 currentMode 则不打勾）。
  */
 export function buildToolItems(
   items: MenuItemConfig[] | undefined,
-  opts: { windowed: boolean; balanceEnabled: boolean; animations: Animations },
+  opts: { windowed: boolean; balanceEnabled: boolean; animations: Animations; currentMode?: PetMode },
 ): MenuNode[] {
   const out: MenuNode[] = [];
   // 缺省/空数组 → 默认菜单（= 上线前的硬编码清单），配置缺失绝不等于「菜单消失」
@@ -127,6 +131,18 @@ export function buildToolItems(
       case 'home':
       case 'reload':
         out.push({ label, action: it.id });
+        break;
+      case 'mode':
+        // 模式子菜单：三档固定叶子（label 来自 PET_MODE_LABELS，与设置页下拉同源）；
+        // 当前档打 ✓ 前缀（仅当调用方传了 currentMode——桌面 sprite 每次开菜单都传）
+        out.push({
+          label,
+          children: PET_MODES.map((m) => ({
+            label: (opts.currentMode === m ? '✓ ' : '') + PET_MODE_LABELS[m],
+            action: 'set-mode' as const,
+            mode: m,
+          })),
+        });
         break;
       case 'animations': {
         const tree = buildMenuTree(opts.animations);

@@ -41,7 +41,8 @@ const BASE = {
       fixedEnabled: false,
       display: 'web',
       // 菜单两字段与生产 assets/config.jsonc 同形（内置默认必须含它们：
-      // 无用户层时 mergePets 直接返回 basePets 原文，缺字段成品就不含）
+      // 无用户层时 mergePets 返回内置默认列表——除 mode 由 resolvePetMode 统一补齐外即原文，
+      // 缺这两个字段成品就不含）
       menuItems: DEFAULT_MENU_ITEMS,
       menuStyle: DEFAULT_MENU_STYLE,
       position: { corner: 'bottom-right', marginX: 40, marginY: 40 },
@@ -712,6 +713,63 @@ describe('readAllConfig —— 宠物固定合并（缺失取默认 / 非法回�
     const pets = merged.main.pets as Record<string, unknown>[];
     assert.equal(pets.find((p) => p.id === 'a')?.fixedEnabled, true);
     assert.equal(pets.find((p) => p.id === 'b')?.fixedEnabled, false);
+  });
+});
+
+describe('行为模式 mode —— saveUserConfig 白名单 + readAllConfig 合并/老配置迁移', () => {
+  /** 取落盘后的第 n 只宠物（save 侧） */
+  const petAt = (out: Record<string, unknown> | null, n = 0): Record<string, unknown> =>
+    (out?.pets as Record<string, unknown>[])[n];
+  /** 取合并后的第 n 只宠物（read 侧） */
+  const mAt = (merged: Record<string, Record<string, unknown>>, n = 0): Record<string, unknown> =>
+    (merged.main.pets as Record<string, unknown>[])[n];
+
+  test('save：合法模式逐宠物写入（不在白名单就会被保存悄悄丢掉——菜单切模式存不进去）', () => {
+    const out = saveOnce({ pets: [{ ...PETS[0], mode: 'follow' }] });
+    assert.equal(petAt(out).mode, 'follow', 'mode 必须在 saveUserConfig 的白名单里');
+  });
+
+  test('save：非法模式 → 整体拒绝（宿主回 400，脏值绝不落盘）', () => {
+    assert.equal(saveOnce({ pets: [{ ...PETS[0], mode: 'fly' }] }), null);
+    assert.equal(saveOnce({ pets: [{ ...PETS[0], mode: 42 }] }), null);
+  });
+
+  test('save：未传时落盘即缺失（默认由读取侧补，不凭空造值）', () => {
+    const bare: Record<string, unknown> = { ...PETS[0] };
+    delete bare.mode;
+    assert.equal(petAt(saveOnce({ pets: [bare] })).mode, undefined);
+  });
+
+  test('read：显式模式原样通过（成品字段永远合法）', () => {
+    const merged = readAllConfig(withBase({}, { pets: [{ ...BASE.pets[0], mode: 'follow' }] }));
+    assert.equal(mAt(merged).mode, 'follow');
+  });
+
+  test('read：老配置没写 mode → 按 fixedEnabled 迁移（true=原地待机，false=自由散步）', () => {
+    const legacyFixed = readAllConfig(withBase({}, { pets: [{ ...BASE.pets[0], fixedEnabled: true }] }));
+    assert.equal(mAt(legacyFixed).mode, 'idle', 'fixedEnabled=true 的老配置必须等价原地待机');
+    const legacyFree = readAllConfig(withBase({}));
+    assert.equal(mAt(legacyFree).mode, 'wander', '两个字段都没写 = 原行为（自由散步）');
+  });
+
+  test('read：非法模式 → 回退 wander（告警 + 默认，不让脏值进渲染层）', () => {
+    const merged = readAllConfig(withBase({}, { pets: [{ ...BASE.pets[0], mode: 'fly' }] }));
+    assert.equal(mAt(merged).mode, 'wander');
+  });
+
+  test('read：显式 mode 优先于 fixedEnabled（两者冲突时以 mode 为准，设置页只写 mode）', () => {
+    const merged = readAllConfig(
+      withBase({}, { pets: [{ ...BASE.pets[0], fixedEnabled: true, mode: 'wander' }] }),
+    );
+    assert.equal(mAt(merged).mode, 'wander');
+  });
+
+  test('read：老配置的 menuItems 缺默认 id → 自动补齐（否则新「模式」项永远进不了老用户的菜单）', () => {
+    const legacyItems = DEFAULT_MENU_ITEMS.filter((m) => m.id !== 'mode').map((m) => ({ ...m }));
+    const merged = readAllConfig(withBase({}, { pets: [{ ...BASE.pets[0], menuItems: legacyItems }] }));
+    const items = mAt(merged).menuItems as { id: string }[];
+    assert.equal(items.length, DEFAULT_MENU_ITEMS.length, '默认清单里每个 id 都该在');
+    assert.equal(items[items.length - 1].id, 'mode', '缺的新项追加在末尾（老顺序不动）');
   });
 });
 

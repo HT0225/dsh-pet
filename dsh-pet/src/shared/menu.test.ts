@@ -101,3 +101,41 @@ describe('buildToolItems —— 菜单项配置驱动', () => {
     assert.deepEqual(buildToolItems(items, opts()), []);
   });
 });
+
+describe('buildToolItems —— mode 模式子菜单（自由散步/跟随鼠标/原地待机）', () => {
+  const MODE_ITEM: MenuItemConfig[] = [{ id: 'mode', label: '模式', visible: true }];
+  type Leafish = { label: string; action?: string; mode?: string };
+
+  test('mode 项 = 三档叶子，顺序固定，action=set-mode 且带各自 mode 值', () => {
+    const out = buildToolItems(MODE_ITEM, opts());
+    assert.equal(out.length, 1);
+    assert.equal(out[0].label, '模式');
+    const kids = (out[0] as { children?: Leafish[] }).children;
+    assert.ok(Array.isArray(kids) && kids.length === 3, '必须是三个子项的分支');
+    assert.deepEqual(kids.map((k) => k.label), ['自由散步', '跟随鼠标', '原地待机']);
+    assert.deepEqual(kids.map((k) => k.action), ['set-mode', 'set-mode', 'set-mode']);
+    assert.deepEqual(kids.map((k) => k.mode), ['wander', 'follow', 'idle']);
+  });
+
+  test('currentMode 给当前档打 ✓ 前缀；不传 currentMode 则一个勾都没有', () => {
+    const marked = buildToolItems(MODE_ITEM, { ...opts(), currentMode: 'follow' });
+    const kids = (marked[0] as { children?: Leafish[] }).children ?? [];
+    assert.deepEqual(
+      kids.map((k) => k.label),
+      ['自由散步', '✓ 跟随鼠标', '原地待机'],
+      '✓ 只出现在当前档，且 mode 值不受前缀影响',
+    );
+    assert.equal(kids[1].mode, 'follow');
+    const plain = buildToolItems(MODE_ITEM, opts());
+    const plainKids = (plain[0] as { children?: Leafish[] }).children ?? [];
+    assert.ok(
+      plainKids.every((k) => !k.label.startsWith('✓')),
+      '没传 currentMode 就不该有勾',
+    );
+  });
+
+  test('visible=false → 整个模式分支不出现（与其它工具项同语义）', () => {
+    const items: MenuItemConfig[] = [{ id: 'mode', label: '模式', visible: false }];
+    assert.deepEqual(buildToolItems(items, opts()), []);
+  });
+});

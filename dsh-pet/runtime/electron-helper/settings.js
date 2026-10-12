@@ -45,10 +45,15 @@ const DEFAULT_MENU_ITEMS = [
   { id: 'balance', label: '查看余额', visible: true },
   { id: 'whisper', label: '碎碎念', visible: true },
   { id: 'chat', label: '对话', visible: true },
+  { id: 'mode', label: '模式', visible: true },
   { id: 'home', label: '回到初始位置', visible: true },
   { id: 'reload', label: '重载配置', visible: true },
   { id: 'animations', label: '动作', visible: true },
 ];
+// 行为模式（pets[].mode）—— 与 src/shared/types.ts 的 PET_MODES / PET_MODE_LABELS 同步
+// （同上：本文件不加载 shared-core，内嵌一份；改动需两侧同步）。
+const PET_MODES = ['wander', 'follow', 'idle'];
+const PET_MODE_LABELS = { wander: '自由散步', follow: '跟随鼠标', idle: '原地待机' };
 const DEFAULT_MENU_STYLE = { anim: 'none', fontSize: 13, radius: 8, bg: '#ffffff', fg: '#2b2b2b', hoverBg: '#2b63ff' };
 
 function el(tag, props = {}, ...children) {
@@ -139,7 +144,9 @@ function deriveDraft() {
       balanceEnabled: p.balanceEnabled === true,
       whisperEnabled: p.whisperEnabled === true,
       workStatusEnabled: p.workStatusEnabled === true,
-      fixedEnabled: p.fixedEnabled === true,
+      // 模式（取代原「宠物固定」开关）：成品由 host 保证合法；回落只防手改配置漏字段
+      // （老配置 fixedEnabled=true 且没写 mode → 原地待机，与 host 的迁移规则同口径）
+      mode: PET_MODES.includes(p.mode) ? p.mode : p.fixedEnabled === true ? 'idle' : 'wander',
       display: ['web', 'desktop', 'both', 'none'].includes(p.display) ? p.display : 'both',
       // 右键菜单：按默认清单为骨架、用成品值补齐（成品由宿主合并保证字段在且合法）；
       // 菜单顺序 = 数组顺序，label/visible 直接来自成品
@@ -484,6 +491,17 @@ function renderPets() {
         renderPets();
         markDirty();
       }),
+      // 行为模式（取代原「宠物固定」开关）：自由散步=随机链照常 / 跟随鼠标=朝光标水平走 /
+      // 原地待机=位置永不变。保存即写 pets[].mode，桌宠页经 storage 事件整只重建生效。
+      selectField(
+        '行为模式',
+        pet.mode,
+        PET_MODES.map((m) => ({ value: m, label: PET_MODE_LABELS[m] })),
+        (v) => {
+          pet.mode = v;
+          markDirty();
+        },
+      ),
       numberField('水平边距 marginX', pet.position.marginX, (v) => {
         pet.position.marginX = v;
         markDirty();
@@ -498,10 +516,6 @@ function renderPets() {
 
     const toggles = el('div', { class: 'toggles' });
     toggles.append(
-      toggle('宠物固定（不自己走动）', pet.fixedEnabled, (v) => {
-        pet.fixedEnabled = v;
-        markDirty();
-      }),
       toggle('余额功能', pet.balanceEnabled, (v) => {
         pet.balanceEnabled = v;
         markDirty();
@@ -686,7 +700,7 @@ function saveBody() {
       balanceEnabled: !!pet.balanceEnabled,
       whisperEnabled: !!pet.whisperEnabled,
       workStatusEnabled: !!pet.workStatusEnabled,
-      fixedEnabled: !!pet.fixedEnabled,
+      mode: PET_MODES.includes(pet.mode) ? pet.mode : 'wander',
       display: pet.display,
       // 右键菜单：整份随请求（后端 menuItemsValid/menuStyleValid 权威校验，非法整份拒绝）
       menuItems: pet.menuItems.map((m) => ({ id: m.id, label: String(m.label).trim(), visible: m.visible === true })),
@@ -731,7 +745,7 @@ function addPet() {
           balanceEnabled: false,
           whisperEnabled: false,
           workStatusEnabled: true,
-          fixedEnabled: false,
+          mode: 'wander',
           display: 'both',
           menuItems: JSON.parse(JSON.stringify(DEFAULT_MENU_ITEMS)),
           menuStyle: { ...DEFAULT_MENU_STYLE },
