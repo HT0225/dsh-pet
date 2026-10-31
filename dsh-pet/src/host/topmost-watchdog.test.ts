@@ -95,13 +95,13 @@ describe('源码守卫 —— 置顶看门狗必须在 main.js 里按这套规�
     return m[1];
   };
 
-  test('建窗时那次置顶不能删，且看门狗走的是同一个 API（screen-saver 档）', () => {
+  test('建窗时那次置顶不能删，且看门狗走的是同一个 API（topmostLevel 平台适配）', () => {
     assert.ok(
-      /win\.setAlwaysOnTop\(true, 'screen-saver'\);/.test(main),
+      /win\.setAlwaysOnTop\(true, topmostLevel\(process\.platform\)\)/.test(main),
       '建窗时必须先置顶一次（看门狗只负责复查，不能当成唯一置顶来源）',
     );
     assert.ok(
-      (main.match(/win\.setAlwaysOnTop\(true, 'screen-saver'\)/g) ?? []).length >= 2,
+      (main.match(/win\.setAlwaysOnTop\(true, topmostLevel\(process\.platform\)\)/g) ?? []).length >= 2,
       '看门狗必须再钉一次同档位（HWND_TOPMOST 落带靠它；moveTop 的 HWND_TOP 对已沉底窗口无效）',
     );
     assert.ok(

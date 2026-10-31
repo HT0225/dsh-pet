@@ -45,7 +45,7 @@ try {
   );
   process.exit(3);
 }
-const { app, BrowserWindow, ipcMain, screen, shell, protocol } = electronApi;
+const { app, BrowserWindow, ipcMain, screen, shell, protocol, Tray, Menu, nativeImage } = electronApi;
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { readFileSync, writeFileSync } = require('node:fs');
@@ -53,7 +53,14 @@ const fsPromises = require('node:fs/promises');
 // 点击穿透兜底通道的纯判定（不依赖 Electron 的 forward 鼠标钩子；见文件头注释）
 const { decideWindowIgnore, pointerZone } = require('./pointer-target.js');
 // 置顶看门狗：WS_EX_TOPMOST 只是样式位，不等于窗口真的在置顶带（见 topmost-watchdog.js 头部）
-const { TOPMOST_WATCHDOG_TICK_MS, shouldReassertTopmost } = require('./topmost-watchdog.js');
+const {
+  TOPMOST_WATCHDOG_TICK_MS,
+  TOPMOST_WATCHDOG_ENABLED,
+  shouldReassertTopmost,
+  topmostLevel,
+} = require('./topmost-watchdog.js');
+// 托盘的平台差异（纯判定）：macOS 模板图 / Windows 左键弹菜单 / Dock 隐藏
+const { trayPlatform } = require('./tray-platform.js');
 // 宿主存活判定（issue #56：宿主退出 → 管道断开 → 自己退，绝不弹框、绝不留僵尸）
 const { HOST_POLL_MS, hostIsGone, isBrokenPipeError, parseHostPid } = require('./host-liveness.js');
 // 全局 DPI 线性化的纯判定与换算（含平台例外：macOS 的 DIP 已是「点」，无需补偿；见该文件头）
@@ -448,7 +455,7 @@ function createPetWindows() {
         spellcheck: false,
       },
     });
-    win.setAlwaysOnTop(true, 'screen-saver');
+    win.setAlwaysOnTop(true, topmostLevel(process.platform));
     win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
     // 窗口被其他窗口（另一只宠物）完全遮挡时，Chromium 默认会暂停本窗口渲染，
     // 导致大宠物移动盖过小宠物时小宠物显示为"消失"。关闭后台节流，让被遮挡
@@ -466,14 +473,14 @@ function createPetWindows() {
     // 默认整窗点击穿透（renderer 在光标进/出身体命中区时经 IPC 翻转可交互）；
     // forward:true 保证穿透期间 mousemove 仍转发进渲染端做命中判定。
     setWindowIgnore(win, true);
-    win.once('ready-to-show', () => win.show());
+    win.once('ready-to-show', () => win.showInactive());
     // [#55 兜底显示] paintWhenInitiallyHidden:false 时渲染器可能不产出首帧，ready-to-show 便永不触发
     // （Electron 文档原文：ready-to-show "will never fire if you use paintWhenInitiallyHidden: false"），
     // 而 show() 只挂在它上面 → 窗口永远隐藏（进程活着、宠物逻辑照跑，桌面上什么都没有）。
     // 页面加载完成后强制兜底一次；zoomFactor 的设置在更早注册的 did-finish-load 里，顺序不受影响。
     win.webContents.once('did-finish-load', () => {
       setTimeout(() => {
-        if (!win.isDestroyed() && !win.isVisible()) win.show();
+        if (!win.isDestroyed() && !win.isVisible()) win.showInactive();
       }, 400);
     });
     // [#55 兜底交互] 上面的翻转链路只有「Electron forward 鼠标钩子 → 渲染端命中判定」一个入口，
@@ -505,16 +512,19 @@ function createPetWindows() {
     let lastTopmostAssertMs = Date.now();
     const topmostTimer = setInterval(() => {
       const nowMs = Date.now();
-      const due = shouldReassertTopmost({
-        nowMs,
-        lastAssertMs: lastTopmostAssertMs,
-        destroyed: win.isDestroyed(),
-        visible: win.isVisible(),
-        paused: pointerFallbackPaused,
-      });
+      const due = shouldReassertTopmost(
+        {
+          nowMs,
+          lastAssertMs: lastTopmostAssertMs,
+          destroyed: win.isDestroyed(),
+          visible: win.isVisible(),
+          paused: pointerFallbackPaused,
+        },
+        TOPMOST_WATCHDOG_ENABLED,
+      );
       if (!due) return;
       lastTopmostAssertMs = nowMs;
-      win.setAlwaysOnTop(true, 'screen-saver');
+      win.setAlwaysOnTop(true, topmostLevel(process.platform));
     }, TOPMOST_WATCHDOG_TICK_MS);
     win.on('closed', () => {
       clearInterval(pointerTimer);
@@ -650,6 +660,109 @@ async function handleBridgeRequest(request) {
   return new Response(resp.body ?? '', { status: resp.status || 200, headers });
 }
 
+// ---------------------------------------------------------------------------
+// 托盘：列出全部宠物（含 display 为 web/none 的），勾 = 当前 display 含 desktop/both。
+// 点击翻转「桌面位」（both↔web、desktop↔none），经 bridge 或 HTTP 直连 POST /pet-display。
+// 平台差异住在 tray-platform.js（纯模块，可被 node:test 直接加载）。
+// ---------------------------------------------------------------------------
+const PET_ROUTE = '/dsh-pet-7340';
+const ORIGIN = new URL(process.env.DSH_PET_CONFIG_URL || 'http://127.0.0.1:3080/dsh-pet-7340/config').origin;
+const TRAY_PLATFORM = trayPlatform(process.platform);
+
+/** 与宿主通信：bridge 模式走管道，手动 start-desktop 流退回 HTTP 直连 */
+async function hostRequest(method, url, body) {
+  if (BRIDGE) return bridgeRequest(method, url, body);
+  const resp = await fetch(ORIGIN + url, {
+    method,
+    headers: body ? { 'content-type': 'application/json' } : undefined,
+    body,
+  });
+  return { status: resp.status, body: await resp.text() };
+}
+
+const isDesktopDisplay = (display) => display === 'desktop' || display === 'both';
+
+/** 翻转「桌面位」：both↔web、desktop↔none——浏览器位保持不动，因此不制造新的单向门 */
+const toggleDisplay = (display) =>
+  display === 'both' ? 'web' : display === 'web' ? 'both' : display === 'desktop' ? 'none' : 'desktop';
+
+let tray = null;
+
+/** 写回某只宠物的 display：宿主写完配置会重启本进程，响应可能永远不回（同 sprite.js 的 setPetDisplay） */
+function traySetPetDisplay(id, display) {
+  hostRequest('POST', PET_ROUTE + '/pet-display', JSON.stringify({ id, display })).catch((e) => {
+    console.error('[dsh-pet-desktop-helper] tray pet-display failed:', String(e && e.message ? e.message : e));
+  });
+}
+
+/** 托盘图标：包内 logo 缩到 16×16（macOS 要模板图，否则深色菜单栏下看不见） */
+function trayIcon() {
+  const file = path.join(__dirname, '..', '..', 'assets', 'logo.png');
+  let img = nativeImage.createFromPath(file);
+  if (img.isEmpty()) {
+    // 读不到图标 = 托盘不可见但菜单逻辑照跑，最难查的一种坏法：必须留下能定位的日志
+    console.error('[dsh-pet-desktop-helper] tray icon missing or unreadable: ' + file);
+    return img;
+  }
+  img = img.resize({ width: 16, height: 16 });
+  if (TRAY_PLATFORM.templateImage) img.setTemplateImage(true);
+  return img;
+}
+
+/**
+ * 建托盘：列出**配置里全部**宠物（含 display 为 web/none 的——它们当前不在桌面上、勾是空的，
+ * 点一下就能送回来，这是托盘相对宠物右键菜单的增量）。勾 = 当前 display 含 desktop/both。
+ */
+async function startTray() {
+  try {
+    // 请求行要携带回调 URL，而端口在 startBridgeCallback 的 listen 回调里才有值（最多等 2s）
+    for (let i = 0; BRIDGE && !bridgeCallbackUrl && i < 100; i += 1) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    const resp = await hostRequest('GET', PET_ROUTE + '/config');
+    const merged = JSON.parse(resp.body || '{}');
+    // 成品聚合的形状是 { <条目>: <整份配置文档> }——**顶层键不是宠物**，宠物在各条目的
+    // `pets` 数组里。与渲染端同一契约（renderer.js 的 loadConfig → S.flattenConfigPets，
+    // 规则源码见 src/shared/config.ts:26）。托盘只要 id/name/display，故不吹条目级字段。
+    const pets = Object.values(merged)
+      .flatMap((conf) => (conf && Array.isArray(conf.pets) ? conf.pets : []))
+      .map((pet) => ({
+        id: String((pet && pet.id) || ''),
+        name: String((pet && pet.name) || '').trim(),
+        display: String((pet && pet.display) || ''),
+      }))
+      .filter((pet) => pet.id);
+    if (!pets.length) return; // 配置里没有任何宠物：没有可切换的对象，不建托盘
+    tray = new Tray(trayIcon());
+    tray.setToolTip('dsh-pet 桌面宠物');
+    tray.setContextMenu(
+      Menu.buildFromTemplate(
+        pets.map((pet) => ({
+          label: pet.name || pet.id,
+          type: 'checkbox',
+          checked: isDesktopDisplay(pet.display),
+          click: () => traySetPetDisplay(pet.id, toggleDisplay(pet.display)),
+        })),
+      ),
+    );
+    // Windows 上 setContextMenu 只接管右键，左键默认什么都不做（macOS 相反：左键即弹菜单）
+    if (TRAY_PLATFORM.leftClickPopsMenu) tray.on('click', () => tray.popUpContextMenu());
+  } catch (e) {
+    console.error('[dsh-pet-desktop-helper] tray init failed:', String(e && e.message ? e.message : e));
+  }
+}
+
+/** 销毁托盘：退出前调用，避免 Windows 通知区残留幽灵图标（鼠标划过消失） */
+function destroyTray() {
+  if (!tray) return;
+  try {
+    tray.destroy();
+  } catch (e) {
+    console.error('[dsh-pet-desktop-helper] tray destroy failed:', String(e && e.message ? e.message : e));
+  }
+  tray = null;
+}
+
 app.whenReady().then(() => {
   // 探测子进程：此时没有 force-device-scale-factor，读到的是 Windows 的真实主屏缩放。
   // 退出推迟一拍——在 ready 回调里直接 app.exit() 会赶在 stdout 落盘前拆掉进程
@@ -682,6 +795,12 @@ app.whenReady().then(() => {
     );
     startBridgeCallback(); // 宿主应答回调服务器（stdin 在 Electron 主进程不可用，改走本地 HTTP）
   }
+
+  // macOS：桌面宠物不该占 Dock——托盘才是桌面端的常驻入口，Dock 里多一个图标只会碍事
+  if (TRAY_PLATFORM.hideDock && app.dock) app.dock.hide();
+
+  // 托盘：不 await（建窗与建托盘互不依赖），内部自己等 bridge 回调服务就绪
+  void startTray();
 
   createPetWindows();
 
@@ -1056,6 +1175,11 @@ app.whenReady().then(() => {
       setTimeout(() => app.quit(), 500);
     }, afterMs);
   }
+});
+
+// 退出前销毁托盘：避免 Windows 通知区残留幽灵图标（鼠标划过消失）
+app.on('before-quit', () => {
+  destroyTray();
 });
 
 app.on('window-all-closed', () => {
