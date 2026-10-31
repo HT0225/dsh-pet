@@ -81,6 +81,7 @@ import {
   ID_FORBIDDEN,
   migrateUserConfig,
   readAllConfig,
+  readPetConfigEntry,
   readUserConfig,
   saveUserConfig,
   sliceMemoryRounds,
@@ -908,6 +909,114 @@ export function apply(ctx: any): void {
       if (method !== 'POST') return { kind: 'json', status: 405, obj: { error: 'method not allowed' } };
       void syncDesktop();
       return { kind: 'json', status: 200, obj: { reloading: true } };
+    }
+
+    // 分身管理：POST /pet-clone {id} 添加分身；POST /pet-clone-remove {id} 移除分身。
+    // 每个角色条目最多 8 个分身（本体不计入上限）。分身 id 格式：<entry>__clone_<n>（n=1..8）。
+    // 分身复制本体的动画/素材配置，但关闭余额/碎碎念/工作状态（避免多个分身同时触发）。
+    // 写盘走 readPetConfigEntry + saveUserConfig 透传保留：非白名单字段不被抹掉。
+    if (rest === 'pet-clone' || rest === 'pet-clone-remove') {
+      if (method !== 'POST') return { kind: 'json', status: 405, obj: { error: 'method not allowed' } };
+      let payload: { id?: unknown };
+      try {
+        payload = JSON.parse(body ?? '');
+      } catch {
+        return { kind: 'json', status: 400, obj: { error: 'invalid JSON' } };
+      }
+      const cfg = readAllConfig(configPaths);
+      const hit = findPetInstance(cfg, String(payload.id ?? ''));
+      if (!hit) return { kind: 'json', status: 404, obj: { error: '找不到这个角色' } };
+      const pets = [...(hit.conf.pets as Record<string, unknown>[])];
+      const original = pets[0] as Record<string, unknown>;
+      let nextPets: Record<string, unknown>[];
+      if (rest === 'pet-clone') {
+        if (pets.length >= 9) return { kind: 'json', status: 409, obj: { error: '每个角色最多只能添加8个分身' } };
+        const allIds = new Set(flattenPetList(cfg).map((p) => String(p.id)));
+        let cloneId: string | undefined;
+        let cloneIndex = 0;
+        for (let i = 1; i <= 8; i += 1) {
+          const candidate = hit.entry.slice(0, 48) + '__clone_' + i;
+          if (!allIds.has(candidate)) {
+            cloneId = candidate;
+            cloneIndex = i;
+            break;
+          }
+        }
+        if (!cloneId) return { kind: 'json', status: 409, obj: { error: '分身编号已用完' } };
+        const origPos = (original.position ?? {}) as Record<string, unknown>;
+        const clone: Record<string, unknown> = {
+          ...original,
+          id: cloneId,
+          name: String(original.name ?? original.id) + ' · 分身' + cloneIndex,
+          display: 'desktop',
+          balanceEnabled: false,
+          whisperEnabled: false,
+          workStatusEnabled: false,
+          position: {
+            ...origPos,
+            marginX: (Number(origPos.marginX) || 0) + 36 * cloneIndex,
+            marginY: (Number(origPos.marginY) || 0) + 18 * cloneIndex,
+          },
+        };
+        nextPets = [...pets, clone];
+      } else {
+        // 只允许移除分身，不能移除本体
+        if (hit.pet.id === original.id || !/__clone_[1-8]$/.test(String(hit.pet.id))) {
+          return { kind: 'json', status: 400, obj: { error: '只能移除分身，不能移除本体' } };
+        }
+        nextPets = pets.filter((p) => p.id !== hit.pet.id);
+      }
+      // 写回配置文件：main 走用户主配置，文件宠物/角色项目走自己的配置文件
+      const file =
+        hit.entry === 'main'
+          ? { path: userConfigPath, raw: readUserConfig(configPaths) }
+          : readPetConfigEntry(configPaths, hit.entry);
+      if (!file) return { kind: 'json', status: 404, obj: { error: '角色配置文件不存在' } };
+      const clean = saveUserConfig({ pets: nextPets }, file.raw);
+      if (!clean) return { kind: 'json', status: 400, obj: { error: '分身配置不合法' } };
+      try {
+        await mkdir(join(file.path, '..'), { recursive: true });
+        await writeFile(file.path, JSON.stringify(clean, null, 2), 'utf8');
+      } catch (e) {
+        return { kind: 'json', status: 500, obj: { error: e instanceof Error ? e.message : String(e) } };
+      }
+      void syncDesktop(); // 分身数量变化需要重启桌面 Helper
+      return { kind: 'json', status: 200, obj: { ok: true } };
+    }
+
+    // 独立大小调整：POST /pet-size {id, size}。允许对任意宠物/分身单独设置大小（120-2000）。
+    if (rest === 'pet-size') {
+      if (method !== 'POST') return { kind: 'json', status: 405, obj: { error: 'method not allowed' } };
+      let input: { id?: unknown; size?: unknown };
+      try {
+        input = JSON.parse(body ?? '');
+      } catch {
+        return { kind: 'json', status: 400, obj: { error: 'invalid JSON' } };
+      }
+      if (typeof input.size !== 'number' || !Number.isInteger(input.size) || input.size < 120 || input.size > 2000) {
+        return { kind: 'json', status: 400, obj: { error: '大小请输入120至2000之间的整数' } };
+      }
+      const hit = findPetInstance(readAllConfig(configPaths), String(input.id ?? ''));
+      if (!hit) return { kind: 'json', status: 404, obj: { error: '找不到这个角色或分身' } };
+      if (hit.pet.size === input.size) return { kind: 'json', status: 200, obj: { ok: true, size: input.size } };
+      const file =
+        hit.entry === 'main'
+          ? { path: userConfigPath, raw: readUserConfig(configPaths) }
+          : readPetConfigEntry(configPaths, hit.entry);
+      if (!file) return { kind: 'json', status: 404, obj: { error: '找不到角色配置' } };
+      const pets = (hit.conf.pets as Record<string, unknown>[]).map((p) =>
+        p.id === hit.pet.id ? { ...p, size: input.size } : p,
+      );
+      const clean = saveUserConfig({ pets }, file.raw);
+      if (!clean) return { kind: 'json', status: 400, obj: { error: '大小配置不合法' } };
+      try {
+        await mkdir(join(file.path, '..'), { recursive: true });
+        await writeFile(file.path, JSON.stringify(clean, null, 2), 'utf8');
+      } catch (e) {
+        return { kind: 'json', status: 500, obj: { error: e instanceof Error ? e.message : String(e) } };
+      }
+      void syncDesktop();
+      return { kind: 'json', status: 200, obj: { ok: true, size: input.size } };
     }
 
     // 配置文件路径 + 存储位置清单（设置页「高级配置」与「卸载与存储」展示用）

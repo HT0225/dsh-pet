@@ -192,20 +192,57 @@ interface PetFileEntry {
   path: string;
 }
 
-/** 扫描 pet/ 目录：<名>-config.(json|jsonc) → 条目（按文件名排序） */
+/** 扫描 pet/ 目录 + characters/ 目录：文件宠物与角色项目 → 条目（按文件名排序） */
 function scanPetFiles(petDir: string): PetFileEntry[] {
-  let entries;
+  let entries: import('node:fs').Dirent[];
   try {
     entries = readdirSync(petDir, { withFileTypes: true });
   } catch {
-    return []; // pet/ 目录不存在 = 无文件宠物
+    entries = []; // pet/ 目录不存在 = 无文件宠物（但 characters/ 可能存在）
   }
-  return entries
+  const legacy = entries
     .filter((e) => e.isFile())
     .map((e) => e.name)
     .filter((name) => /^.+?-config\.(json|jsonc)$/.test(name))
     .sort()
     .map((name) => ({ prefix: name.replace(/-config\.(json|jsonc)$/, ''), path: join(petDir, name) }));
+  // 角色项目目录：characters/<名>/config.json —— 每个角色一个完整目录
+  // （config.json + 人设.json + animations/）。与 legacy pet/<名>-config.json 同级，
+  // 同名时项目目录覆盖 legacy 条目（不重复读两份）。
+  const projects = new Map(legacy.map((entry) => [entry.prefix, entry]));
+  const projectRoot = join(petDir, '..', 'characters');
+  if (existsSync(projectRoot)) {
+    let dirs: import('node:fs').Dirent[];
+    try {
+      dirs = readdirSync(projectRoot, { withFileTypes: true });
+    } catch {
+      dirs = [];
+    }
+    for (const dir of dirs) {
+      // 跳过 main（它是默认角色，走 main-config.jsonc 而非项目目录）与非法目录名
+      if (!dir.isDirectory() || dir.name === 'main' || !/^[a-zA-Z0-9_-]+$/.test(dir.name)) continue;
+      const file = join(projectRoot, dir.name, 'config.json');
+      if (existsSync(file)) projects.set(dir.name, { prefix: dir.name, path: file });
+    }
+  }
+  return [...projects.values()].sort((a, b) => a.prefix.localeCompare(b.prefix));
+}
+
+/**
+ * 按条目 key（= 文件名前缀 = 素材根）定位文件宠物 / 角色项目的实际配置文件与磁盘原对象。
+ *
+ * 用途：写路径（POST /pet-clone 等）改某只文件宠物的配置时，既要写回**它自己的**配置文件，
+ * 也要拿该文件的 existing 去做「透传保留」——否则用户手改的非白名单字段会被 saveUserConfig
+ * 的白名单重建整份抹掉。
+ *
+ * 前缀不存在 → undefined。
+ */
+export function readPetConfigEntry(
+  paths: ConfigPaths,
+  entry: string,
+): { path: string; raw: Record<string, unknown> | undefined } | undefined {
+  const hit = scanPetFiles(paths.petDir).find((f) => f.prefix === entry);
+  return hit ? { path: hit.path, raw: readJsonc(hit.path) } : undefined;
 }
 
 /** animations 段完整性校验（与旧 assertAnimationsHost 同一套规则；不 throw，非法返回 false） */
