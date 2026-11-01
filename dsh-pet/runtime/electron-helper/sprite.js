@@ -264,6 +264,9 @@ class PetSprite {
         const vy = Number(payload && payload.vy);
         if (Number.isFinite(vx) && Number.isFinite(vy)) this.onDeskHit(toLocal(vx), toLocal(vy));
       });
+    } else {
+      // 浏览器模式同页碰撞：无 petBridge broker，从 window.__petCollision 共享注册表读其它 sprite 状态
+      this._collisionRegistry = window.__petCollision || null;
     }
     // 配置就是跟随模式（含设置页保存后 storage 事件整只重建）：建完即进入跟随循环。
     // 循环本身在拿到光标位置前不会动（cursorNow() 返回 null → 空转），无副作用。
@@ -926,8 +929,25 @@ class PetSprite {
       // 宠物间碰撞（仅 petCollision 开启）：飞行中的自己撞到其它宠物 → 动量弹开
       if (this.physics && this.physics.petCollision) {
         const myBody = S.bodyPixelBox({ x: state.x, y: state.y, size: this.size, bottomPad: this.bottomPad });
-        for (const pid of Object.keys(this.others)) {
-          const o = this.others[pid];
+        // 浏览器模式：从共享注册表读其它 sprite 状态；桌面模式：从 broker 广播的 this.others
+        let othersSource;
+        if (this._collisionRegistry && this._collisionRegistry.sprites) {
+          // 同页模式：直接从其它 sprite 对象取实时状态（CSS 僐素，无需转换）
+          othersSource = {};
+          for (const [pid, s] of this._collisionRegistry.sprites) {
+            if (pid === this.pet.id || !s || s.pos == null) continue;
+            const ts = s.throwState; // 飞行中才有速度；静止 = 0
+            othersSource[pid] = {
+              x: s.pos.x, y: s.pos.y,
+              vx: ts ? ts.vx : 0, vy: ts ? ts.vy : 0,
+              size: s.size, bottomPad: s.bottomPad,
+            };
+          }
+        } else {
+          othersSource = this.others;
+        }
+        for (const pid of Object.keys(othersSource)) {
+          const o = othersSource[pid];
           if (!o || !o.size) continue;
           const otherBody = S.bodyPixelBox({ x: o.x, y: o.y, size: o.size, bottomPad: o.bottomPad });
           if (!S.rectsOverlap(myBody, otherBody)) continue;
@@ -936,13 +956,18 @@ class PetSprite {
             { x: o.x, y: o.y, vx: o.vx, vy: o.vy, size: o.size },
           );
           if (hit) {
-            // 飞行方：按动量结果继续弹开；被撞方：主进程转发给目标窗口 → 目标窗 startThrow
             state.vx = hit.fvx;
             state.vy = hit.fvy;
             this.throwState = state;
             if (window.petBridge && window.petBridge.reportCollide) {
-              // 被撞方初速同为 broker 物理像素协议：×scale（§3.5 收口）
+              // 桌面模式：主进程转发给目标窗口
               window.petBridge.reportCollide(pid, toScreen(hit.hvx), toScreen(hit.hvy));
+            } else if (this._collisionRegistry && this._collisionRegistry.sprites) {
+              // 浏览器模式：直接调用被撞 sprite 的 onDeskHit
+              const target = this._collisionRegistry.sprites.get(pid);
+              if (target && typeof target.onDeskHit === 'function') {
+                target.onDeskHit(hit.hvx, hit.hvy);
+              }
             }
             break; // 一帧只处理一次碰撞（避免连锁触发抖动）
           }

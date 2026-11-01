@@ -984,31 +984,63 @@ export function apply(ctx: any): void {
       return { kind: 'json', status: 200, obj: { ok: true } };
     }
 
-    // 独立大小调整：POST /pet-size {id, size}。允许对任意宠物/分身单独设置大小（120-2000）。
-    if (rest === 'pet-size') {
+    // 宠物属性更新：POST /pet-update {id, size?, display?, position?}。
+    // 允许对任意宠物/分身单独设置大小（120-2000）、显示模式、位置。
+    // 文件宠物/角色项目的设置页编辑走这里；main 条目仍走 PUT /config。
+    if (rest === 'pet-update') {
       if (method !== 'POST') return { kind: 'json', status: 405, obj: { error: 'method not allowed' } };
-      let input: { id?: unknown; size?: unknown };
+      let input: { id?: unknown; size?: unknown; display?: unknown; position?: unknown; assetRoot?: unknown };
       try {
         input = JSON.parse(body ?? '');
       } catch {
         return { kind: 'json', status: 400, obj: { error: 'invalid JSON' } };
       }
-      if (typeof input.size !== 'number' || !Number.isInteger(input.size) || input.size < 120 || input.size > 2000) {
-        return { kind: 'json', status: 400, obj: { error: '大小请输入120至2000之间的整数' } };
-      }
       const hit = findPetInstance(readAllConfig(configPaths), String(input.id ?? ''));
       if (!hit) return { kind: 'json', status: 404, obj: { error: '找不到这个角色或分身' } };
-      if (hit.pet.size === input.size) return { kind: 'json', status: 200, obj: { ok: true, size: input.size } };
+      const patch: Record<string, unknown> = {};
+      if (input.size !== undefined) {
+        if (typeof input.size !== 'number' || !Number.isInteger(input.size) || input.size < 120 || input.size > 2000) {
+          return { kind: 'json', status: 400, obj: { error: '大小请输入120至2000之间的整数' } };
+        }
+        patch.size = input.size;
+      }
+      if (input.display !== undefined) {
+        if (!['web', 'desktop', 'both', 'none'].includes(String(input.display))) {
+          return { kind: 'json', status: 400, obj: { error: 'display 必须是 web/desktop/both/none' } };
+        }
+        patch.display = input.display;
+      }
+      if (input.position !== undefined) {
+        const pos = input.position as Record<string, unknown>;
+        if (!pos || typeof pos !== 'object') return { kind: 'json', status: 400, obj: { error: 'position 必须是对象' } };
+        const corner = String(pos.corner ?? '');
+        if (!['top-left', 'top-right', 'bottom-left', 'bottom-right'].includes(corner)) {
+          return { kind: 'json', status: 400, obj: { error: 'position.corner 必须是四角之一' } };
+        }
+        patch.position = {
+          corner,
+          marginX: Number.isFinite(Number(pos.marginX)) ? Number(pos.marginX) : 0,
+          marginY: Number.isFinite(Number(pos.marginY)) ? Number(pos.marginY) : 0,
+        };
+      }
+      if (input.assetRoot !== undefined) {
+        const ar = String(input.assetRoot).trim();
+        if (!ar || ar.length > 64 || !/^[a-zA-Z0-9_-]+$/.test(ar)) {
+          return { kind: 'json', status: 400, obj: { error: 'assetRoot 必须是字母数字下划线，≤64字符' } };
+        }
+        patch.assetRoot = ar;
+      }
+      if (!Object.keys(patch).length) return { kind: 'json', status: 400, obj: { error: '没有要更新的字段' } };
       const file =
         hit.entry === 'main'
           ? { path: userConfigPath, raw: readUserConfig(configPaths) }
           : readPetConfigEntry(configPaths, hit.entry);
       if (!file) return { kind: 'json', status: 404, obj: { error: '找不到角色配置' } };
       const pets = (hit.conf.pets as Record<string, unknown>[]).map((p) =>
-        p.id === hit.pet.id ? { ...p, size: input.size } : p,
+        p.id === hit.pet.id ? { ...p, ...patch } : p,
       );
       const clean = saveUserConfig({ pets }, file.raw);
-      if (!clean) return { kind: 'json', status: 400, obj: { error: '大小配置不合法' } };
+      if (!clean) return { kind: 'json', status: 400, obj: { error: '配置不合法' } };
       try {
         await mkdir(join(file.path, '..'), { recursive: true });
         await writeFile(file.path, JSON.stringify(clean, null, 2), 'utf8');
@@ -1016,7 +1048,7 @@ export function apply(ctx: any): void {
         return { kind: 'json', status: 500, obj: { error: e instanceof Error ? e.message : String(e) } };
       }
       void syncDesktop();
-      return { kind: 'json', status: 200, obj: { ok: true, size: input.size } };
+      return { kind: 'json', status: 200, obj: { ok: true, ...patch } };
     }
 
     // 配置文件路径 + 存储位置清单（设置页「高级配置」与「卸载与存储」展示用）

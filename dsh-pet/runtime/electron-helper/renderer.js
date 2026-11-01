@@ -110,6 +110,11 @@ async function boot() {
     }
     window.__dshPetDebug.configOk = true;
     window.__dshPetDebug.spriteCount = sprites.length;
+    // 浏览器模式同页碰撞：所有 sprite 在同一页面，直接共享状态实现碰撞检测。
+    // 桌面模式（IS_WINDOWED）走 Electron broker，不需要这个。
+    if (!IS_WINDOWED && sprites.length > 1) {
+      window.__petCollision = { sprites: new Map(sprites.map((s) => [s.pet.id, s])) };
+    }
     for (const s of sprites) s.playIdle();
     startLoops();
     // 空闲时预加载常用动画（待机/转向/点击/走动），消除首次切换的加载延迟

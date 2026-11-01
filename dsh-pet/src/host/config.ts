@@ -626,6 +626,7 @@ function mergePet(
   return {
     id,
     name,
+    ...(typeof p.assetRoot === 'string' && p.assetRoot ? { assetRoot: p.assetRoot } : {}),
     size: petNumber(p.size, base.size, 1, label, 'size', id),
     balanceEnabled: petBool(p.balanceEnabled, base.balanceEnabled, label, 'balanceEnabled', id),
     whisperEnabled: petBool(p.whisperEnabled, base.whisperEnabled, label, 'whisperEnabled', id),
@@ -764,6 +765,7 @@ export function saveUserConfig(
     out.push({
       id,
       name,
+      ...(typeof pp.assetRoot === 'string' && pp.assetRoot ? { assetRoot: pp.assetRoot } : {}),
       size,
       balanceEnabled,
       whisperEnabled,

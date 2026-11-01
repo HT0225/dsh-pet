@@ -131,38 +131,78 @@ async function api(path, options) {
   return data;
 }
 
-/** 成品 → 草稿（只取白名单字段；file pet 条目与派生字段一律不进表单） */
+/** 成品 → 草稿：main 条目 + 文件宠物/角色项目全部纳入可编辑表单。
+ *  main 条目保存走 PUT /config（原路径）；
+ *  文件宠物/角色项目保存走 POST /pet-size、POST /pet-display（逐只写回各自配置文件）。
+ *  新增/删除宠物仍只对 main 生效（文件宠物的增删由各自目录管理）。 */
 function deriveDraft() {
   const main = (merged && merged.main) || {};
   const base = Array.isArray(main.pets) ? main.pets.filter((p) => p && p.extra !== true) : [];
   const phys = main.physics && typeof main.physics === 'object' ? main.physics : {};
+
+  // main 条目的宠物
+  const mainPets = base.map((p) => ({
+    _entry: 'main',
+    _editable: true,
+    id: String(p.id || ''),
+    name: String(p.name || p.id || ''),
+    assetRoot: typeof p.assetRoot === 'string' && p.assetRoot ? p.assetRoot : 'main',
+    size: Number(p.size) || 462,
+    balanceEnabled: p.balanceEnabled === true,
+    whisperEnabled: p.whisperEnabled === true,
+    workStatusEnabled: p.workStatusEnabled === true,
+    mode: PET_MODES.includes(p.mode) ? p.mode : p.fixedEnabled === true ? 'idle' : 'wander',
+    display: ['web', 'desktop', 'both', 'none'].includes(p.display) ? p.display : 'both',
+    menuItems: DEFAULT_MENU_ITEMS.map((d) => {
+      const m = Array.isArray(p.menuItems) ? p.menuItems.find((x) => x && x.id === d.id) : null;
+      return m ? { id: d.id, label: String(m.label || d.label), visible: m.visible !== false } : { ...d };
+    }),
+    menuStyle: { ...DEFAULT_MENU_STYLE, ...(p.menuStyle && typeof p.menuStyle === 'object' ? p.menuStyle : {}) },
+    position: {
+      corner: ['top-left', 'top-right', 'bottom-left', 'bottom-right'].includes(p.position && p.position.corner)
+        ? p.position.corner
+        : 'bottom-right',
+      marginX: Number(p.position && p.position.marginX) || 0,
+      marginY: Number(p.position && p.position.marginY) || 0,
+    },
+  }));
+
+  // 文件宠物/角色项目（character3/character4/...）：可编辑大小/显隐/位置，但不能增删/改菜单
+  const filePetsList = [];
+  if (merged) {
+    for (const [entry, conf] of Object.entries(merged)) {
+      if (entry === 'main' || !conf || !Array.isArray(conf.pets)) continue;
+      for (const p of conf.pets) {
+        filePetsList.push({
+          _entry: entry,
+          _editable: true,
+          id: String(p.id || ''),
+          name: String(p.name || p.id || ''),
+          size: Number(p.size) || 280,
+          balanceEnabled: p.balanceEnabled === true,
+          whisperEnabled: p.whisperEnabled === true,
+          workStatusEnabled: p.workStatusEnabled === true,
+          mode: PET_MODES.includes(p.mode) ? p.mode : p.fixedEnabled === true ? 'idle' : 'wander',
+          display: ['web', 'desktop', 'both', 'none'].includes(p.display) ? p.display : 'both',
+          menuItems: DEFAULT_MENU_ITEMS.map((d) => {
+            const m = Array.isArray(p.menuItems) ? p.menuItems.find((x) => x && x.id === d.id) : null;
+            return m ? { id: d.id, label: String(m.label || d.label), visible: m.visible !== false } : { ...d };
+          }),
+          menuStyle: { ...DEFAULT_MENU_STYLE, ...(p.menuStyle && typeof p.menuStyle === 'object' ? p.menuStyle : {}) },
+          position: {
+            corner: ['top-left', 'top-right', 'bottom-left', 'bottom-right'].includes(p.position && p.position.corner)
+              ? p.position.corner
+              : 'bottom-right',
+            marginX: Number(p.position && p.position.marginX) || 0,
+            marginY: Number(p.position && p.position.marginY) || 0,
+          },
+        });
+      }
+    }
+  }
+
   draft = {
-    pets: base.map((p) => ({
-      id: String(p.id || ''),
-      name: String(p.name || p.id || ''),
-      size: Number(p.size) || 462,
-      balanceEnabled: p.balanceEnabled === true,
-      whisperEnabled: p.whisperEnabled === true,
-      workStatusEnabled: p.workStatusEnabled === true,
-      // 模式（取代原「宠物固定」开关）：成品由 host 保证合法；回落只防手改配置漏字段
-      // （老配置 fixedEnabled=true 且没写 mode → 原地待机，与 host 的迁移规则同口径）
-      mode: PET_MODES.includes(p.mode) ? p.mode : p.fixedEnabled === true ? 'idle' : 'wander',
-      display: ['web', 'desktop', 'both', 'none'].includes(p.display) ? p.display : 'both',
-      // 右键菜单：按默认清单为骨架、用成品值补齐（成品由宿主合并保证字段在且合法）；
-      // 菜单顺序 = 数组顺序，label/visible 直接来自成品
-      menuItems: DEFAULT_MENU_ITEMS.map((d) => {
-        const m = Array.isArray(p.menuItems) ? p.menuItems.find((x) => x && x.id === d.id) : null;
-        return m ? { id: d.id, label: String(m.label || d.label), visible: m.visible !== false } : { ...d };
-      }),
-      menuStyle: { ...DEFAULT_MENU_STYLE, ...(p.menuStyle && typeof p.menuStyle === 'object' ? p.menuStyle : {}) },
-      position: {
-        corner: ['top-left', 'top-right', 'bottom-left', 'bottom-right'].includes(p.position && p.position.corner)
-          ? p.position.corner
-          : 'bottom-right',
-        marginX: Number(p.position && p.position.marginX) || 0,
-        marginY: Number(p.position && p.position.marginY) || 0,
-      },
-    })),
+    pets: [...mainPets, ...filePetsList],
     globals: {
       notificationsEnabled: main.notificationsEnabled === true,
       whisperImageEnabled: main.whisperImageEnabled === true,
@@ -453,6 +493,7 @@ function renderPets() {
   const list = $('#pet-list');
   list.textContent = '';
   draft.pets.forEach((pet, index) => {
+    const isFilePet = pet._entry !== 'main';
     const card = el('div', { class: 'pet-card' + (pet.display === 'none' ? ' is-hidden' : '') });
     card.append(
       el(
@@ -461,14 +502,19 @@ function renderPets() {
         el('span', { class: 'pet-idx', text: String(index + 1) }),
         el('b', { text: pet.name || pet.id || '（未命名）' }),
         el('span', { class: 'id', text: pet.id }),
+        isFilePet ? el('span', { class: 'id', text: '[' + pet._entry + ']', title: '角色项目' }) : null,
         el('span', { class: 'grow' }),
-        el('button', { class: 'btn small', text: '复制', onclick: () => duplicatePet(index) }),
-        el('button', {
-          class: 'btn small danger',
-          text: '删除',
-          disabled: draft.pets.length <= 1 ? '' : undefined,
-          onclick: () => removePet(index),
-        }),
+        isFilePet
+          ? null
+          : el('button', { class: 'btn small', text: '复制', onclick: () => duplicatePet(index) }),
+        isFilePet
+          ? null
+          : el('button', {
+              class: 'btn small danger',
+              text: '删除',
+              disabled: draft.pets.filter((p) => p._entry === 'main').length <= 1 ? '' : undefined,
+              onclick: () => removePet(index),
+            }),
       ),
     );
 
@@ -478,8 +524,14 @@ function renderPets() {
         pet.name = v;
         markDirty();
       }),
-      textField('标识 id（程序认，唯一；素材按它取）', pet.id, (v) => {
-        pet.id = v.trim();
+      isFilePet
+        ? textField('标识 id（角色项目固定，不可改）', pet.id, () => {}, { readonly: true })
+        : textField('标识 id（程序认，唯一；素材按它取）', pet.id, (v) => {
+            pet.id = v.trim();
+            markDirty();
+          }),
+      textField('素材目录（pet/ 下的目录名；main = 包内默认）', pet.assetRoot || 'main', (v) => {
+        pet.assetRoot = v.trim() || 'main';
         markDirty();
       }),
       rangeField('尺寸（像素，宠物视频框宽）', pet.size, 120, 900, 6, (v) => {
@@ -536,7 +588,7 @@ function renderPets() {
 
   const files = filePets();
   $('#file-pets').textContent = files.length
-    ? `另有 ${files.length} 只文件宠物（${[...new Set(files.map((f) => f.entry))].join('、')}）由 pet/ 目录定义，此处只读、不会被保存覆盖。`
+    ? `${files.length} 只角色项目宠物已纳入上方列表，可调整大小/显示/位置；id 与素材目录不可改，删除请移除其目录。`
     : '';
 }
 
@@ -686,23 +738,24 @@ function validateDraft() {
   return errors;
 }
 
-/** 草稿 → PUT /config 请求体（只带白名单字段，宿主按「传了才算」处理） */
+/** 草稿 → PUT /config 请求体（只含 main 条目宠物；文件宠物/角色项目走 /pet-update 单独保存） */
 function saveBody() {
+  const mainPets = draft.pets.filter((p) => p._entry === 'main');
   const body = {
     ...draft.globals,
     chatMemoryRounds: Number(draft.globals.chatMemoryRounds),
     chatImageLimit: Number(draft.globals.chatImageLimit),
     physics: { ...draft.physics },
-    pets: draft.pets.map((pet) => ({
+    pets: mainPets.map((pet) => ({
       id: pet.id,
       name: pet.name,
+      ...(pet.assetRoot && pet.assetRoot !== 'main' ? { assetRoot: pet.assetRoot } : {}),
       size: Number(pet.size),
       balanceEnabled: !!pet.balanceEnabled,
       whisperEnabled: !!pet.whisperEnabled,
       workStatusEnabled: !!pet.workStatusEnabled,
       mode: PET_MODES.includes(pet.mode) ? pet.mode : 'wander',
       display: pet.display,
-      // 右键菜单：整份随请求（后端 menuItemsValid/menuStyleValid 权威校验，非法整份拒绝）
       menuItems: pet.menuItems.map((m) => ({ id: m.id, label: String(m.label).trim(), visible: m.visible === true })),
       menuStyle: {
         anim: ['none', 'fade', 'scale'].includes(pet.menuStyle.anim) ? pet.menuStyle.anim : 'none',
@@ -720,6 +773,21 @@ function saveBody() {
     })),
   };
   return body;
+}
+
+/** 文件宠物/角色项目 → /pet-update 请求体（只含该宠物自己的 size/display/position/assetRoot） */
+function filePetUpdateBody(pet) {
+  return {
+    id: pet.id,
+    ...(pet.assetRoot && pet.assetRoot !== pet._entry ? { assetRoot: pet.assetRoot } : {}),
+    size: Number(pet.size),
+    display: pet.display,
+    position: {
+      corner: pet.position.corner,
+      marginX: Number(pet.position.marginX),
+      marginY: Number(pet.position.marginY),
+    },
+  };
 }
 
 // ---------- 动作 ----------
@@ -825,6 +893,17 @@ async function save() {
       }
     }
     merged = result;
+    // 文件宠物/角色项目：逐只 POST /pet-update 写回各自配置文件
+    const filePetsToSave = draft.pets.filter((p) => p._entry !== 'main');
+    for (const pet of filePetsToSave) {
+      await api('/pet-update', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(filePetUpdateBody(pet)),
+      });
+    }
+    // 重新拉取成品（含文件宠物的更新）
+    merged = await api('/config');
     deriveDraft();
     dirty = false;
     renderAll();

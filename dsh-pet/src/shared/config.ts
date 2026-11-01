@@ -38,7 +38,9 @@ export function flattenConfigPets(merged: Record<string, Record<string, unknown>
         workStatusTexts: conf.workStatusTexts as string[][] | undefined,
         whisperModel: conf.whisperModel as ModelSelection | undefined,
         chatModel: conf.chatModel as ModelSelection | undefined,
-        assetRoot: entry,
+        // 宠物可以自带 assetRoot 指向自己的素材目录（跨条目复用动画）；
+        // 没写才回落到条目 key（= 素材根）。
+        assetRoot: typeof p.assetRoot === 'string' && p.assetRoot ? p.assetRoot : entry,
         extra: entry !== 'main',
       });
     }
